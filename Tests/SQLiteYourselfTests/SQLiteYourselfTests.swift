@@ -46,6 +46,12 @@ class SQLiteYourselfTests: XCTestCase {
 
         row.reset()
 
+        XCTAssertEqual(row.scan(Int.self), 1)
+        XCTAssertEqual(row.scan(Int.self), 23)
+        XCTAssertEqual(row.scan(String.self), "gary@gmail.com")
+
+        row.reset()
+
         struct User {
             let id: Int
             let age: Int

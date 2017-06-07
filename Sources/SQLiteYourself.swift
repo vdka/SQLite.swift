@@ -268,7 +268,8 @@ public struct Rows {
     public struct Row {
         var columns: [Column?]
         var scanIndex: Int = 0
-        var data = UnsafeMutableRawPointer.allocate(bytes: 1024, alignedTo: 8)
+        // FIXME(vdka): Investigate some sort of threadlocal storage for this then, raise it out off of Row to avoid alloc's
+        var data = UnsafeMutableRawBufferPointer.allocate(count: 1024) // start with 1kb
 
         init(columns: [Column?]) {
             self.columns = columns
@@ -293,36 +294,42 @@ public struct Rows {
                 guard case .integer(let v)? = columns[scanIndex] else {
                     fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
                 }
+                scanIndex += 1
                 return v as! T
 
             case is String.Type:
                 guard case .text(let v)? = columns[scanIndex] else {
                     fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
                 }
+                scanIndex += 1
                 return v as! T
 
             case is Double.Type:
                 guard case .real(let v)? = columns[scanIndex] else {
                     fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
                 }
+                scanIndex += 1
                 return v as! T
 
             case is Float.Type:
                 guard case .real(let v)? = columns[scanIndex] else {
                     fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
                 }
+                scanIndex += 1
                 return Float(v) as! T
 
             case is Date.Type:
                 guard case .date(let v)? = columns[scanIndex] else {
                     fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
                 }
+                scanIndex += 1
                 return v as! T
 
             case is Data.Type:
                 guard case .data(let v)? = columns[scanIndex] else {
                     fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
                 }
+                scanIndex += 1
                 return v as! T
 
             default:
@@ -330,9 +337,16 @@ public struct Rows {
             }
 
             // Create a dummy instance of a value with type `T`
-//            let v = data.bindMemory(to: type, capacity: 1).pointee
+            // Using our dummy data, create an instance of a value with type `T`. This value is never actually used aside to get its Type into the Mirror
+            // It is important not to use the value from this memory
 
-            let mirror = Mirror(reflecting: data.bindMemory(to: type, capacity: 1).pointee)
+            // Firstly ensure we have enough memory, grow the data buffer if we do not.
+            if data.count < MemoryLayout<T>.size {
+                data.deallocate()
+                data = UnsafeMutableRawBufferPointer.allocate(count: MemoryLayout<T>.size)
+            }
+
+            let mirror = Mirror(reflecting: data.baseAddress!.bindMemory(to: type, capacity: 1).pointee)
             // NOTE(vdka): @IMPORTANT 
             // DO NOT print anything from the mirror, the if any of the child types are a string then it will be an invalid one.
             // This is because the string represented by a zero'd value will fail in `initializeWithCopy value witness for Swift.String`.
@@ -342,7 +356,7 @@ public struct Rows {
             case .tuple: fallthrough
             case .struct:
 
-                let p = UnsafeMutableRawPointer(data)
+                let p = UnsafeMutableRawPointer(data.baseAddress!)
                 var byteOffset = 0
                 for child in mirror.children {
                     print(byteOffset, terminator: "")
@@ -417,9 +431,7 @@ public struct Rows {
                 fatalError("Unsupported kind for reflection. Only unnested value types are supported by .scan")
             }
 
-            let result = data.assumingMemoryBound(to: type).pointee
-
-            return result
+            return data.baseAddress!.assumingMemoryBound(to: type).pointee
         }
     }
 }
