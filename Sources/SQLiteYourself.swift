@@ -330,12 +330,13 @@ public struct Rows {
             }
 
             // Create a dummy instance of a value with type `T`
-            let v = data.bindMemory(to: type, capacity: 1).pointee
+//            let v = data.bindMemory(to: type, capacity: 1).pointee
 
-            let mirror = Mirror(reflecting: v)
-
-            print(Array(mirror.children.map({ $0.value })))
-
+            let mirror = Mirror(reflecting: data.bindMemory(to: type, capacity: 1).pointee)
+            // NOTE(vdka): @IMPORTANT 
+            // DO NOT print anything from the mirror, the if any of the child types are a string then it will be an invalid one.
+            // This is because the string represented by a zero'd value will fail in `initializeWithCopy value witness for Swift.String`.
+//            print(Array(mirror.children.map({ $0.value }))) // DO NOT DO THIS
 
             switch mirror.displayStyle! {
             case .tuple: fallthrough

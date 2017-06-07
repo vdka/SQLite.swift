@@ -32,27 +32,30 @@ class SQLiteYourselfTests: XCTestCase {
 
         try! db.exec("INSERT INTO users VALUES (1, 'Gary', 'Doe', 23, 'gary@gmail.com')")
 
-        var rows = try! db.query("SELECT id, age FROM users WHERE (id = 1)")
+        var rows = try! db.query("SELECT id, age, email FROM users WHERE (id = 1)")
         guard var row = rows.next() else {
             XCTFail("Failed to find Gary!")
             return
         }
 
-        let details = row.scan((Int, Int).self)
-        print(details)
+        let (id, age, email) = row.scan((Int, Int, String).self)
 
-//        XCTAssertEqual(details.1, "gary@gmail.com")
-        XCTAssertEqual(details.1, 23)
+        XCTAssertEqual(id, 1)
+        XCTAssertEqual(age, 23)
+        XCTAssertEqual(email, "gary@gmail.com")
 
         row.reset()
 
         struct User {
             let id: Int
             let age: Int
+            let email: String
         }
 
         let user = row.scan(User.self)
+        XCTAssertEqual(user.id, 1)
         XCTAssertEqual(user.age, 23)
+        XCTAssertEqual(user.email, "gary@gmail.com")
     }
 
     static var allTests = [
