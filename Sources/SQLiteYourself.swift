@@ -267,10 +267,158 @@ public struct Rows {
 
     public struct Row {
         var columns: [Column?]
+        var scanIndex: Int = 0
+        var data = UnsafeMutableRawPointer.allocate(bytes: 1024, alignedTo: 8)
+
+        init(columns: [Column?]) {
+            self.columns = columns
+        }
+
+        /// Resets the current scanIndex back to 0
+        mutating func reset() {
+            scanIndex = 0
+        }
 
         func get<T: SQLDataType>(index: Int) -> T? {
 
             return columns[index].map(T.getFromColumn)
+        }
+
+        mutating func scan<T>(_ type: T.Type) -> T {
+            assert(scanIndex < columns.count)
+
+            // FIXME: handle optionals possibly with an additional overload
+            switch type {
+            case is Int.Type:
+                guard case .integer(let v)? = columns[scanIndex] else {
+                    fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
+                }
+                return v as! T
+
+            case is String.Type:
+                guard case .text(let v)? = columns[scanIndex] else {
+                    fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
+                }
+                return v as! T
+
+            case is Double.Type:
+                guard case .real(let v)? = columns[scanIndex] else {
+                    fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
+                }
+                return v as! T
+
+            case is Float.Type:
+                guard case .real(let v)? = columns[scanIndex] else {
+                    fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
+                }
+                return Float(v) as! T
+
+            case is Date.Type:
+                guard case .date(let v)? = columns[scanIndex] else {
+                    fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
+                }
+                return v as! T
+
+            case is Data.Type:
+                guard case .data(let v)? = columns[scanIndex] else {
+                    fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
+                }
+                return v as! T
+
+            default:
+                break
+            }
+
+            // Create a dummy instance of a value with type `T`
+            let v = data.bindMemory(to: type, capacity: 1).pointee
+
+            let mirror = Mirror(reflecting: v)
+
+            print(Array(mirror.children.map({ $0.value })))
+
+
+            switch mirror.displayStyle! {
+            case .tuple: fallthrough
+            case .struct:
+
+                let p = UnsafeMutableRawPointer(data)
+                var byteOffset = 0
+                for child in mirror.children {
+                    print(byteOffset, terminator: "")
+
+                    defer {
+                        scanIndex += 1
+                    }
+
+                    // we need to pack for alignment in tuples and structs
+                    defer {
+                        let rem = byteOffset % 8
+                        if rem != 0 {
+                            byteOffset += rem
+                            print(" -> \(byteOffset)")
+                        } else {
+                            print()
+                        }
+                    }
+
+                    switch child.value {
+                    case let value as Int:
+                        guard case .integer(let v)? = columns[scanIndex] else {
+                            fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
+                        }
+                        p.storeBytes(of: v, toByteOffset: byteOffset, as: Int.self)
+                        byteOffset += MemoryLayout.alignment(ofValue: value)
+
+                    case let value as String:
+                        guard case .text(let v)? = columns[scanIndex] else {
+                            fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
+                        }
+                        p.storeBytes(of: v, toByteOffset: byteOffset, as: String.self)
+                        byteOffset += MemoryLayout.alignment(ofValue: value)
+
+                    case let value as Double:
+                        guard case .real(let v)? = columns[scanIndex] else {
+                            fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
+                        }
+                        p.storeBytes(of: v, toByteOffset: byteOffset, as: Double.self)
+                        byteOffset += MemoryLayout.alignment(ofValue: value)
+
+                    case let value as Float:
+                        guard case .real(let v)? = columns[scanIndex] else {
+                            fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
+                        }
+                        p.storeBytes(of: Float(v), toByteOffset: byteOffset, as: Float.self)
+                        byteOffset += MemoryLayout.stride(ofValue: value)
+
+                    case let value as Date:
+                        guard case .date(let v)? = columns[scanIndex] else {
+                            fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
+                        }
+                        p.storeBytes(of: v, toByteOffset: byteOffset, as: Date.self)
+                        byteOffset += MemoryLayout.alignment(ofValue: value)
+
+                    case let value as Data:
+                        guard case .data(let v)? = columns[scanIndex] else {
+                            fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
+                        }
+                        p.storeBytes(of: v, toByteOffset: byteOffset, as: Data.self)
+                        byteOffset += MemoryLayout.stride(ofValue: value)
+
+                    default:
+                        fatalError("Unsupported type")
+                    }
+                }
+
+            case .optional:
+                fatalError("Soon™")
+
+            default:
+                fatalError("Unsupported kind for reflection. Only unnested value types are supported by .scan")
+            }
+
+            let result = data.assumingMemoryBound(to: type).pointee
+
+            return result
         }
     }
 }
