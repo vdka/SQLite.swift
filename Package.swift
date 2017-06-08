@@ -3,5 +3,8 @@
 import PackageDescription
 
 let package = Package(
-    name: "SQLiteYourself"
+    name: "SQLiteYourself",
+    dependencies: [
+        .Package(url: "https://github.com/Zewo/Reflection.git", majorVersion: 0, minor: 14),
+    ]
 )

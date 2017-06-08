@@ -1,6 +1,20 @@
 import XCTest
 @testable import SQLiteYourself
 
+struct User: Equatable {
+    let firstName: String
+    let lastName: String
+    let age: Float
+    let email: String
+
+    static func == (lhs: User, rhs: User) -> Bool {
+        return lhs.firstName == rhs.firstName &&
+            lhs.lastName == rhs.lastName &&
+            lhs.age == rhs.age &&
+            lhs.email == rhs.email
+    }
+}
+
 class SQLiteYourselfTests: XCTestCase {
 
     var databasePath: String = ""
@@ -24,45 +38,34 @@ class SQLiteYourselfTests: XCTestCase {
                     id INTEGER,
                     first_name TEXT NOT NULL,
                     last_name TEXT NOT NULL,
-                    age INTEGER NOT NULL,
+                    age FLOAT NOT NULL,
                     email TEXT NOT NULL UNIQUE,
                     PRIMARY KEY(id)
                 );
             """)
 
-        try! db.exec("INSERT INTO users VALUES (1, 'Gary', 'Doe', 23, 'gary@gmail.com')")
+        let u1 = User(firstName: "Thurstan", lastName: "Bussy", age: 34, email: "tbussy0@w3.org")
+        let u2 = User(firstName: "Zoe", lastName: "Shufflebotham", age: 66, email: "zshufflebotham1@accuweather.com")
+        let u3 = User(firstName: "Constancia", lastName: "McKinstry", age: 33, email: "cmckinstry2@state.gov")
+        let u4 = User(firstName: "Valma", lastName: "Mulvin", age: 31, email: "vmulvin3@ustream.tv")
 
-        for _ in 0 ..< 1 {
-            let rows = try! db.query("SELECT id, age, email FROM users WHERE (id = ?)", 1)
-            guard let row = rows.next() else {
-                XCTFail("Failed to find Gary!")
-                return
+        let users: [User] = [u1, u2, u3, u4]
+
+        for user in users {
+            try! db.exec("INSERT INTO users (first_name, last_name, age, email) VALUES (?, ?, ?, ?)", params: user.firstName, user.lastName, user.age, user.email)
+        }
+
+        for _ in 0 ..< 10000 {
+            let rows = try! db.query("SELECT first_name, last_name, age, email FROM users ORDER BY age ASC")
+
+            for (row, expectedUser) in zip(rows, users.sorted(by: { $0.0.age < $0.1.age })) {
+                let user = row.scan(User.self)
+
+                XCTAssertEqual(user, expectedUser)
             }
 
-            let (id, age, email) = row.scan((Int, Int, String).self)
-
-            XCTAssertEqual(id, 1)
-            XCTAssertEqual(age, 23)
-            XCTAssertEqual(email, "gary@gmail.com")
-
-            row.reset()
-
-            XCTAssertEqual(row.scan(Int.self), 1)
-            XCTAssertEqual(row.scan(Int.self), 23)
-            XCTAssertEqual(row.scan(String.self), "gary@gmail.com")
-
-            row.reset()
-
-            struct User {
-                let id: Int
-                let age: Int
-                let email: String
-            }
-
-            let user = row.scan(User.self)
-            XCTAssertEqual(user.id, 1)
-            XCTAssertEqual(user.age, 23)
-            XCTAssertEqual(user.email, "gary@gmail.com")
+            let govEmployee = try! db.queryFirst("SELECT first_name, last_name, age, email FROM users WHERE email LIKE '%@%.gov'").scan(User.self)
+            XCTAssertEqual(govEmployee, u3)
         }
     }
 

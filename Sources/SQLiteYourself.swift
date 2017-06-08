@@ -1,5 +1,6 @@
 
 import Foundation
+import Reflection
 import SQLite3
 
 public enum Column {
@@ -8,6 +9,112 @@ public enum Column {
     case real(Double)
     case date(Date)
     case data(Data)
+}
+
+public protocol SQLDataType {
+    static func get(from column: Column) -> Self
+
+    static var size: Int { get }
+
+    var sqlColumnValue: Column { get }
+}
+
+extension SQLDataType {
+
+    public static var size: Int {
+        return MemoryLayout<Self>.size
+    }
+}
+
+extension Int: SQLDataType {
+    public static func get(from column: Column) -> Int {
+        guard case .integer(let v) = column else {
+            fatalError()
+        }
+        return v
+    }
+
+    public var sqlColumnValue: Column {
+        return Column.integer(self)
+    }
+}
+
+extension String: SQLDataType {
+    public static func get(from column: Column) -> String {
+        guard case .text(let v) = column else {
+            fatalError()
+        }
+        return v
+    }
+
+    public var sqlColumnValue: Column {
+        return Column.text(self)
+    }
+}
+
+extension Double: SQLDataType {
+    public static func get(from column: Column) -> Double {
+        guard case .real(let v) = column else {
+            fatalError()
+        }
+        return v
+    }
+
+    public var sqlColumnValue: Column {
+        return Column.real(self)
+    }
+}
+
+extension Float: SQLDataType {
+    public static func get(from column: Column) -> Float {
+        guard case .real(let v) = column else {
+            fatalError()
+        }
+        return Float(v)
+    }
+
+    public var sqlColumnValue: Column {
+        return Column.real(Double(self))
+    }
+}
+
+extension Bool: SQLDataType {
+    public static func get(from column: Column) -> Bool {
+        guard case .integer(let v) = column else {
+            fatalError()
+        }
+        return v != 0
+    }
+
+    public var sqlColumnValue: Column {
+        return Column.integer(self ? 1 : 0)
+    }
+}
+
+extension Date: SQLDataType {
+    public static func get(from column: Column) -> Date {
+        guard case .date(let v) = column else {
+            fatalError()
+        }
+        return v
+    }
+
+    public var sqlColumnValue: Column {
+        return Column.date(self)
+    }
+}
+
+extension Data: SQLDataType {
+    public static func get(from column: Column) -> Data {
+        guard case .data(let v) = column else {
+            fatalError()
+        }
+        return v
+    }
+
+    public var sqlColumnValue: Column {
+        return Column.data(self)
+    }
 }
 
 public enum ColumnType: Int32 {
@@ -32,7 +139,10 @@ public class DB {
         var description: String
     }
 
-    static func open(path: String?) throws -> DB {
+    static let SQLITE_STATIC = unsafeBitCast(0, to: sqlite3_destructor_type.self)
+    static let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+    public static func open(path: String?) throws -> DB {
 
         var db: OpaquePointer?
 
@@ -77,27 +187,7 @@ public class DB {
         }
     }
 
-    public func exec(_ sql: String) throws {
-
-        let err = sqlite3_exec(self.handle, sql, nil, nil, nil)
-
-        guard err == SQLITE_OK else {
-            throw Error(description: getError(handle))
-        }
-    }
-
-    static let SQLITE_STATIC = unsafeBitCast(0, to: sqlite3_destructor_type.self)
-    static let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-
-    public func query(_ sql: String, _ params: Any?...) throws -> Rows {
-
-        var stmt: OpaquePointer?
-        let res = sqlite3_prepare_v2(handle, sql, -1, &stmt, nil)
-
-        guard res == SQLITE_OK else {
-            sqlite3_finalize(stmt)
-            throw Error(description: getError(handle))
-        }
+    func bind(stmt: OpaquePointer, params: [Column?]) throws {
 
         if !params.isEmpty {
             let stmtParamCount = sqlite3_bind_parameter_count(stmt)
@@ -109,35 +199,24 @@ public class DB {
             for (index, param) in params.enumerated() {
                 let sqlIndex = Int32(index) + 1
                 switch param {
-                case let param as String:
+                case .text(let param)?:
                     flag = sqlite3_bind_text(stmt, sqlIndex, param, -1, DB.SQLITE_TRANSIENT)
 
-                case let param as Data:
+                case .data(let param)?:
                     flag = sqlite3_bind_blob(stmt, sqlIndex, param.withUnsafeBytes({ UnsafeRawPointer($0) }), numericCast(param.count), DB.SQLITE_TRANSIENT)
 
-                case let param as Date:
+                case .date(let param)?:
                     let dateString = fmt.string(from: param)
                     flag = sqlite3_bind_text(stmt, sqlIndex, dateString, -1, DB.SQLITE_TRANSIENT)
 
-                case let param as Bool:
-                    let num: Int32 = param ? 1 : 0
-                    flag = sqlite3_bind_int(stmt, sqlIndex, num)
-
-                case let param as Double:
+                case .real(let param)?:
                     flag = sqlite3_bind_double(stmt, sqlIndex, param)
 
-                case let param as Float:
-                    let double = Double(param)
-                    flag = sqlite3_bind_double(stmt, sqlIndex, double)
-
-                case let param as Int:
+                case .integer(let param)?:
                     flag = sqlite3_bind_int64(stmt, sqlIndex, numericCast(param))
 
                 case nil:
                     flag = sqlite3_bind_null(stmt, sqlIndex)
-
-                default:
-                    fatalError("Unsupported type in SQL query param \(type(of: param))")
                 }
 
                 guard flag == SQLITE_OK else {
@@ -147,6 +226,42 @@ public class DB {
                 }
             }
         }
+    }
+
+    public func exec(_ sql: String, params: SQLDataType?...) throws {
+
+        var stmt: OpaquePointer?
+        var res = sqlite3_prepare_v2(handle, sql, -1, &stmt, nil)
+
+        guard res == SQLITE_OK else {
+            throw Error(description: getError(handle))
+        }
+
+        try bind(stmt: stmt!, params: params.map({ $0?.sqlColumnValue }))
+
+        res = sqlite3_step(stmt)
+        guard res == SQLITE_OK || res == SQLITE_DONE else {
+            if res == SQLITE_BUSY {
+                print("DB was busy, this can be tried again!")
+            }
+            throw Error(description: getError(handle))
+        }
+
+        // we can ignore this error, it will be the one returned above in the call to `sqlite3_step`
+        _ = sqlite3_finalize(stmt)
+    }
+
+    public func query(_ sql: String, params: SQLDataType?...) throws -> Rows {
+
+        var stmt: OpaquePointer?
+        let res = sqlite3_prepare_v2(handle, sql, -1, &stmt, nil)
+
+        guard res == SQLITE_OK else {
+            sqlite3_finalize(stmt)
+            throw Error(description: getError(handle))
+        }
+
+        try bind(stmt: stmt!, params: params.map({ $0?.sqlColumnValue }))
 
         return Rows(dbHandle: handle, stmt: stmt!)
     }
@@ -349,179 +464,62 @@ public class Rows: IteratorProtocol, Sequence {
 
         func get<T: SQLDataType>(index: Int) -> T? {
 
-            return columns[index].map(T.getFromColumn)
+            return columns[index].map(T.get(from:))
+        }
+
+        func scan<T: SQLDataType>(_ type: T.Type) -> T {
+            assert(scanIndex < columns.count)
+            defer {
+                scanIndex += 1
+            }
+
+            return T.get(from: columns[scanIndex]!)
+        }
+
+        func scan<T: SQLDataType>(_ type: T.Type) -> Optional<T> {
+            assert(scanIndex < columns.count)
+            defer {
+                scanIndex += 1
+            }
+
+            return columns[scanIndex].map(T.get(from:))
         }
 
         func scan<T>(_ type: T.Type) -> T {
-            assert(scanIndex < columns.count)
 
-            // FIXME: handle optionals possibly with an additional overload
-            switch type {
-            case is Int.Type:
-                guard case .integer(let v)? = columns[scanIndex] else {
-                    fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
-                }
-                scanIndex += 1
-                return v as! T
-
-            case is String.Type:
-                guard case .text(let v)? = columns[scanIndex] else {
-                    fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
-                }
-                scanIndex += 1
-                return v as! T
-
-            case is Double.Type:
-                guard case .real(let v)? = columns[scanIndex] else {
-                    fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
-                }
-                scanIndex += 1
-                return v as! T
-
-            case is Float.Type:
-                guard case .real(let v)? = columns[scanIndex] else {
-                    fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
-                }
-                scanIndex += 1
-                return Float(v) as! T
-
-            case is Date.Type:
-                guard case .date(let v)? = columns[scanIndex] else {
-                    fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
-                }
-                scanIndex += 1
-                return v as! T
-
-            case is Data.Type:
-                guard case .data(let v)? = columns[scanIndex] else {
-                    fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
-                }
-                scanIndex += 1
-                return v as! T
-
-            default:
-                break
+            let storage = UnsafeMutableRawBufferPointer.allocate(count: MemoryLayout<T>.size)
+            _ = storage.initializeMemory(as: UInt8.self, from: repeatElement(0, count: MemoryLayout<T>.size))
+            defer {
+                storage.deallocate()
             }
 
-            // Create a dummy instance of a value with type `T`
-            // Using our dummy data, create an instance of a value with type `T`. This value is never actually used aside to get its Type into the Mirror
-            // It is important not to use the value from this memory
+            var value = storage.baseAddress!.assumingMemoryBound(to: type).pointee
 
-            // Firstly ensure we have enough memory, grow the data buffer if we do not.
-            if data.count < MemoryLayout<T>.size {
-                data.deallocate()
-                data = UnsafeMutableRawBufferPointer.allocate(count: MemoryLayout<T>.size)
-            }
+            let props = try! properties(type)
 
-            _ = data.initializeMemory(as: UInt8.self, from: repeatElement(0, count: MemoryLayout<T>.size))
+            for prop in props {
 
-            let mirror = Mirror(reflecting: data.baseAddress!.bindMemory(to: type, capacity: 1).pointee)
-            // NOTE(vdka): @IMPORTANT 
-            // DO NOT print anything from the mirror, the if any of the child types are a string then it will be an invalid one.
-            // This is because the string represented by a zero'd value will fail in `initializeWithCopy value witness for Swift.String`.
-//            print(Array(mirror.children.map({ $0.value }))) // DO NOT DO THIS
+                guard let propertyType = prop.type as? SQLDataType.Type else {
 
-            switch mirror.displayStyle! {
-            case .tuple: fallthrough
-            case .struct:
+                    fatalError("""
 
-                let p = UnsafeMutableRawPointer(data.baseAddress!)
-                var byteOffset = 0
-                for child in mirror.children {
-//                    print(byteOffset, terminator: "")
+                        ERROR: Unsupported type (\(prop.type)) in type \(type) during call to \(#function)
 
-                    defer {
-                        scanIndex += 1
-                    }
+                        SQLiteYourself only has support for aggregate types that contain type conformant to the SQLDataType protocol.
+                        If you beleive your type should conform to this, you can implement the conformance yourself and you will be able to read and write
+                        the type to your database directly without error.
 
-                    // we need to pack for alignment in tuples and structs
-                    defer {
-                        let rem = byteOffset % 8
-                        if rem != 0 {
-                            byteOffset += rem
-//                            print(" -> \(byteOffset)")
-                        } else {
-//                            print()
-                        }
-                    }
+                        If you beleive this error should not have occured check GitHub for similar complaints and 👍 them.
+                        If no issue exists that describes your use case please create an issue explaining why and how you would use this functionality.
 
-                    switch child.value {
-                    case let value as Int:
-                        guard case .integer(let v)? = columns[scanIndex] else {
-                            fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
-                        }
-                        p.storeBytes(of: v, toByteOffset: byteOffset, as: Int.self)
-                        byteOffset += MemoryLayout.alignment(ofValue: value)
-
-                    case let value as String:
-                        guard case .text(let v)? = columns[scanIndex] else {
-                            fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
-                        }
-                        p.storeBytes(of: v, toByteOffset: byteOffset, as: String.self)
-                        byteOffset += MemoryLayout.alignment(ofValue: value)
-
-                    case let value as Double:
-                        guard case .real(let v)? = columns[scanIndex] else {
-                            fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
-                        }
-                        p.storeBytes(of: v, toByteOffset: byteOffset, as: Double.self)
-                        byteOffset += MemoryLayout.alignment(ofValue: value)
-
-                    case let value as Float:
-                        guard case .real(let v)? = columns[scanIndex] else {
-                            fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
-                        }
-                        p.storeBytes(of: Float(v), toByteOffset: byteOffset, as: Float.self)
-                        byteOffset += MemoryLayout.stride(ofValue: value)
-
-                    case let value as Date:
-                        guard case .date(let v)? = columns[scanIndex] else {
-                            fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
-                        }
-                        p.storeBytes(of: v, toByteOffset: byteOffset, as: Date.self)
-                        byteOffset += MemoryLayout.alignment(ofValue: value)
-
-                    case let value as Data:
-                        guard case .data(let v)? = columns[scanIndex] else {
-                            fatalError("Column type mismatch, expected \(type), got \(String(describing: columns[scanIndex]))")
-                        }
-                        p.storeBytes(of: v, toByteOffset: byteOffset, as: Data.self)
-                        byteOffset += MemoryLayout.stride(ofValue: value)
-
-                    default:
-                        fatalError("Unsupported type")
-                    }
+                    """)
                 }
 
-            case .optional:
-                fatalError("Soon™")
-
-            default:
-                fatalError("Unsupported kind for reflection. Only unnested value types are supported by .scan")
+                try! set(propertyType.get(from: columns[scanIndex]!), key: prop.key, for: &value)
+                scanIndex += 1
             }
 
-            return data.baseAddress!.assumingMemoryBound(to: type).pointee
+            return value
         }
     }
 }
-
-protocol SQLDataType {
-    static func getFromColumn(_ column: Column) -> Self
-}
-extension Int: SQLDataType {
-    static func getFromColumn(_ column: Column) -> Int {
-        guard case .integer(let v) = column else {
-            fatalError()
-        }
-        return v
-    }
-}
-extension String: SQLDataType {
-    static func getFromColumn(_ column: Column) -> String {
-        guard case .text(let v) = column else {
-            fatalError()
-        }
-        return v
-    }
-}
-
