@@ -487,6 +487,15 @@ public class Rows: IteratorProtocol, Sequence {
 
         public func scan<T>(_ type: T.Type) -> T {
 
+            let md = Metadata(type: type)
+
+            guard case .struct = md.kind else {
+                fatalError("""
+                    Non struct values are not current supported by this method
+                    We are working on this.
+                """)
+            }
+
             let storage = UnsafeMutableRawBufferPointer.allocate(count: MemoryLayout<T>.size)
             _ = storage.initializeMemory(as: UInt8.self, from: repeatElement(0, count: MemoryLayout<T>.size))
             defer {
