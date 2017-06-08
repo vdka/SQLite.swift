@@ -444,7 +444,7 @@ public class Rows: IteratorProtocol, Sequence {
     }
 
     public class Row {
-        var columns: [Column?]
+        public var columns: [Column?]
         var scanIndex: Int = 0
         // FIXME(vdka): Investigate some sort of threadlocal storage for this then, raise it out off of Row to avoid alloc's
         var data = UnsafeMutableRawBufferPointer.allocate(count: 1024) // start with 1kb
@@ -458,16 +458,16 @@ public class Rows: IteratorProtocol, Sequence {
         }
 
         /// Resets the current scanIndex back to 0
-        func reset() {
+        public func reset() {
             scanIndex = 0
         }
 
-        func get<T: SQLDataType>(index: Int) -> T? {
+        public func get<T: SQLDataType>(index: Int) -> T? {
 
             return columns[index].map(T.get(from:))
         }
 
-        func scan<T: SQLDataType>(_ type: T.Type) -> T {
+        public func scan<T: SQLDataType>(_ type: T.Type) -> T {
             assert(scanIndex < columns.count)
             defer {
                 scanIndex += 1
@@ -476,7 +476,7 @@ public class Rows: IteratorProtocol, Sequence {
             return T.get(from: columns[scanIndex]!)
         }
 
-        func scan<T: SQLDataType>(_ type: T.Type) -> Optional<T> {
+        public func scan<T: SQLDataType>(_ type: T.Type) -> Optional<T> {
             assert(scanIndex < columns.count)
             defer {
                 scanIndex += 1
@@ -485,7 +485,7 @@ public class Rows: IteratorProtocol, Sequence {
             return columns[scanIndex].map(T.get(from:))
         }
 
-        func scan<T>(_ type: T.Type) -> T {
+        public func scan<T>(_ type: T.Type) -> T {
 
             let storage = UnsafeMutableRawBufferPointer.allocate(count: MemoryLayout<T>.size)
             _ = storage.initializeMemory(as: UInt8.self, from: repeatElement(0, count: MemoryLayout<T>.size))
