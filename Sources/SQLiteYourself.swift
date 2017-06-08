@@ -86,7 +86,10 @@ public class DB {
         }
     }
 
-    public func query(_ sql: String) throws -> Rows {
+    static let SQLITE_STATIC = unsafeBitCast(0, to: sqlite3_destructor_type.self)
+    static let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+    public func query(_ sql: String, _ params: Any?...) throws -> Rows {
 
         var stmt: OpaquePointer?
         let res = sqlite3_prepare_v2(handle, sql, -1, &stmt, nil)
@@ -96,11 +99,72 @@ public class DB {
             throw Error(description: getError(handle))
         }
 
+        if !params.isEmpty {
+            let stmtParamCount = sqlite3_bind_parameter_count(stmt)
+            guard params.count == numericCast(stmtParamCount) else {
+                fatalError("Parameter count mismatch, sql statment was expecting \(stmtParamCount), but you passed \(params.count)")
+            }
+
+            var flag: Int32 = 0
+            for (index, param) in params.enumerated() {
+                let sqlIndex = Int32(index) + 1
+                switch param {
+                case let param as String:
+                    flag = sqlite3_bind_text(stmt, sqlIndex, param, -1, DB.SQLITE_TRANSIENT)
+
+                case let param as Data:
+                    flag = sqlite3_bind_blob(stmt, sqlIndex, param.withUnsafeBytes({ UnsafeRawPointer($0) }), numericCast(param.count), DB.SQLITE_TRANSIENT)
+
+                case let param as Date:
+                    let dateString = fmt.string(from: param)
+                    flag = sqlite3_bind_text(stmt, sqlIndex, dateString, -1, DB.SQLITE_TRANSIENT)
+
+                case let param as Bool:
+                    let num: Int32 = param ? 1 : 0
+                    flag = sqlite3_bind_int(stmt, sqlIndex, num)
+
+                case let param as Double:
+                    flag = sqlite3_bind_double(stmt, sqlIndex, param)
+
+                case let param as Float:
+                    let double = Double(param)
+                    flag = sqlite3_bind_double(stmt, sqlIndex, double)
+
+                case let param as Int:
+                    flag = sqlite3_bind_int64(stmt, sqlIndex, numericCast(param))
+
+                case nil:
+                    flag = sqlite3_bind_null(stmt, sqlIndex)
+
+                default:
+                    fatalError("Unsupported type in SQL query param \(type(of: param))")
+                }
+
+                guard flag == SQLITE_OK else {
+                    sqlite3_finalize(stmt)
+                    let error = getError(handle)
+                    throw Error(description: error)
+                }
+            }
+        }
+
         return Rows(dbHandle: handle, stmt: stmt!)
+    }
+
+    public func queryFirst(_ sql: String) throws -> Rows.Row {
+        var rows = try query(sql)
+        defer {
+            rows.close()
+        }
+        guard let row = rows.next() else {
+            throw Error(description: "No rows!")
+        }
+
+        return row
     }
 }
 
-public struct Rows {
+public class Rows: IteratorProtocol, Sequence {
 
     let dbHandle: OpaquePointer
     var stmt: OpaquePointer?
@@ -128,14 +192,18 @@ public struct Rows {
         self.columnTypes = columnTypes
     }
 
-    func close() throws {
-        let err = sqlite3_finalize(stmt)
-        guard err == SQLITE_OK else {
-            throw DB.Error(description: getError(dbHandle))
-        }
+    deinit {
+        self.close()
     }
 
-    mutating func next() -> Row? {
+    func close() {
+        // The error returned by finalize is indicative of the error returned by the last evaluation of stmt.
+        // Hence, we can ignore it.
+        _ = sqlite3_finalize(stmt)
+        stmt = nil
+    }
+
+    public func next() -> Row? {
 
         guard let stmt = stmt else {
             return nil
@@ -148,11 +216,6 @@ public struct Rows {
             if result == SQLITE_BUSY {
                 // TODO(vdka): Provide a nice way to try this again.
                 print("Database engine unable to acquire database locks. For more details read here: https://sqlite.org/rescode.html#busy")
-            }
-
-            if result == SQLITE_DONE {
-                sqlite3_finalize(stmt)
-                self.stmt = nil
             }
 
             return nil
@@ -265,7 +328,7 @@ public struct Rows {
         return ColumnType.text
     }
 
-    public struct Row {
+    public class Row {
         var columns: [Column?]
         var scanIndex: Int = 0
         // FIXME(vdka): Investigate some sort of threadlocal storage for this then, raise it out off of Row to avoid alloc's
@@ -275,8 +338,12 @@ public struct Rows {
             self.columns = columns
         }
 
+        deinit {
+            data.deallocate()
+        }
+
         /// Resets the current scanIndex back to 0
-        mutating func reset() {
+        func reset() {
             scanIndex = 0
         }
 
@@ -285,7 +352,7 @@ public struct Rows {
             return columns[index].map(T.getFromColumn)
         }
 
-        mutating func scan<T>(_ type: T.Type) -> T {
+        func scan<T>(_ type: T.Type) -> T {
             assert(scanIndex < columns.count)
 
             // FIXME: handle optionals possibly with an additional overload
@@ -346,6 +413,8 @@ public struct Rows {
                 data = UnsafeMutableRawBufferPointer.allocate(count: MemoryLayout<T>.size)
             }
 
+            _ = data.initializeMemory(as: UInt8.self, from: repeatElement(0, count: MemoryLayout<T>.size))
+
             let mirror = Mirror(reflecting: data.baseAddress!.bindMemory(to: type, capacity: 1).pointee)
             // NOTE(vdka): @IMPORTANT 
             // DO NOT print anything from the mirror, the if any of the child types are a string then it will be an invalid one.
@@ -359,7 +428,7 @@ public struct Rows {
                 let p = UnsafeMutableRawPointer(data.baseAddress!)
                 var byteOffset = 0
                 for child in mirror.children {
-                    print(byteOffset, terminator: "")
+//                    print(byteOffset, terminator: "")
 
                     defer {
                         scanIndex += 1
@@ -370,9 +439,9 @@ public struct Rows {
                         let rem = byteOffset % 8
                         if rem != 0 {
                             byteOffset += rem
-                            print(" -> \(byteOffset)")
+//                            print(" -> \(byteOffset)")
                         } else {
-                            print()
+//                            print()
                         }
                     }
 
