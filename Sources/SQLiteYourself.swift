@@ -126,68 +126,122 @@ public enum ColumnType: Int32 {
     case date = 42 // NOTE(vdka): This isn't an actual ColumnType defined in SQLite. It's adhoc
 }
 
-func getError(_ handle: OpaquePointer) -> String {
-    return String(cString: sqlite3_errmsg(handle))
-}
 
 /// Internal DateFormatter instance used to manage date formatting
 let fmt = DateFormatter()
 
-public class DB {
+public protocol DBInterface {
+    var handle: DB.Handle { get }
+    func exec(_ sql: String, params: SQLDataType?...) throws
+    func query(_ sql: String, params: SQLDataType?...) throws -> Rows
+    func queryFirst(_ sql: String, params: SQLDataType?...) throws -> Rows.Row?
+}
 
-    public struct Error: Swift.Error {
-        var description: String
+public class Tx: DBInterface {
+
+    public let handle: DB.Handle
+    public var isDone: Bool = false
+
+    init(handle: DB.Handle) {
+        self.handle = handle
     }
 
-    static let SQLITE_STATIC = unsafeBitCast(0, to: sqlite3_destructor_type.self)
-    static let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    public func commit() throws {
+        precondition(!isDone)
+        try exec("COMMIT")
+        isDone = true
+    }
+
+    public func rollback() throws {
+        precondition(!isDone)
+        try exec("ROLLBACK")
+        isDone = true
+    }
+
+    public enum Mode: String {
+        case deferred = "DEFERRED"
+        case immediate = "IMMEDIATE"
+        case exclusive = "EXCLUSIVE"
+    }
+}
+
+// MARK: - Savepoint stuff. Not sure why these would be used... but eh.
+extension Tx {
+
+    public func savepoint() throws -> Savepoint {
+        let uuid = UUID()
+        try exec("SAVEPOINT \(uuid.uuidString)")
+
+        return Savepoint(uuid: uuid)
+    }
+
+    public func release(_ savepoint: Savepoint) throws {
+        try exec("RELEASE \(savepoint.uuid.uuidString)")
+    }
+
+    public func rollback(to savepoint: Savepoint) throws {
+        try exec("ROLLBACK TO \(savepoint.uuid.uuidString)")
+    }
+
+    public struct Savepoint {
+        let uuid: UUID
+    }
+}
+
+public class DB: DBInterface {
+
+    public let handle: DB.Handle
+
+    init(handle: DB.Handle) {
+        self.handle = handle
+    }
 
     public static func open(path: String?) throws -> DB {
 
-        var db: OpaquePointer?
+        var db: DB.Handle?
 
         let res = sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil)
         guard res == SQLITE_OK else {
-            let message = String(validatingUTF8: sqlite3_errmsg(db))!
             sqlite3_close(db)
-            throw Error(description: message)
+            throw Error.new(db!)
         }
 
         return DB(handle: db!)
     }
 
-    public var handle: OpaquePointer
+    public func begin(_ mode: Tx.Mode = .deferred) throws -> Tx {
 
-    init(handle: OpaquePointer) {
-        self.handle = handle
+        let tx = Tx(handle: handle)
+        try exec("BEGIN \(mode.rawValue)")
 
-        if #available(OSX 10.12, *) {
-            sqlite3_trace_v2(handle, UInt32(SQLITE_TRACE_STMT | SQLITE_TRACE_ROW | SQLITE_TRACE_CLOSE), { trace, _, p, t -> Int32 in
+        return tx
+    }
+}
 
-                switch Int32(trace) {
-                case SQLITE_TRACE_STMT:
-                    let str = String(validatingUTF8: t!.assumingMemoryBound(to: Int8.self))!
-                    print(str)
+extension DB {
 
-                case SQLITE_TRACE_ROW:
-                    print("Got row for stmt \(p!)")
+    public typealias Handle = OpaquePointer
+    typealias Stmt = OpaquePointer
 
-                case SQLITE_TRACE_CLOSE:
-                    break
+    public struct Error: Swift.Error, CustomStringConvertible {
+        public var code: Int32
+        public var description: String
 
-                case SQLITE_TRACE_PROFILE:
-                    break
+        static func new(_ handle: Handle) -> Error {
+            let code = sqlite3_errcode(handle)
+            let msg = String(cString: sqlite3_errmsg(handle))
 
-                default:
-                    fatalError()
-                }
-
-                return 0
-            }, nil)
+            return Error(code: code, description: msg)
         }
     }
 
-    func bind(stmt: OpaquePointer, params: [Column?]) throws {
+    static let SQLITE_STATIC = unsafeBitCast(0, to: sqlite3_destructor_type.self)
+    static let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+}
+
+extension DBInterface {
+
+    func bind(stmt: DB.Stmt, params: [Column?]) throws {
 
         if !params.isEmpty {
             let stmtParamCount = sqlite3_bind_parameter_count(stmt)
@@ -221,8 +275,7 @@ public class DB {
 
                 guard flag == SQLITE_OK else {
                     sqlite3_finalize(stmt)
-                    let error = getError(handle)
-                    throw Error(description: error)
+                    throw DB.Error.new(handle)
                 }
             }
         }
@@ -230,11 +283,11 @@ public class DB {
 
     public func exec(_ sql: String, params: SQLDataType?...) throws {
 
-        var stmt: OpaquePointer?
+        var stmt: DB.Stmt?
         var res = sqlite3_prepare_v2(handle, sql, -1, &stmt, nil)
 
         guard res == SQLITE_OK else {
-            throw Error(description: getError(handle))
+            throw DB.Error.new(handle)
         }
 
         try bind(stmt: stmt!, params: params.map({ $0?.sqlColumnValue }))
@@ -244,21 +297,21 @@ public class DB {
             if res == SQLITE_BUSY {
                 print("DB was busy, this can be tried again!")
             }
-            throw Error(description: getError(handle))
+            throw DB.Error.new(handle)
         }
 
         // we can ignore this error, it will be the one returned above in the call to `sqlite3_step`
         _ = sqlite3_finalize(stmt)
     }
 
-    public func query(_ sql: String, params: SQLDataType?...) throws -> Rows {
+    func query(_ sql: String, params: [SQLDataType?]) throws -> Rows {
 
-        var stmt: OpaquePointer?
+        var stmt: DB.Stmt?
         let res = sqlite3_prepare_v2(handle, sql, -1, &stmt, nil)
 
         guard res == SQLITE_OK else {
             sqlite3_finalize(stmt)
-            throw Error(description: getError(handle))
+            throw DB.Error.new(handle)
         }
 
         try bind(stmt: stmt!, params: params.map({ $0?.sqlColumnValue }))
@@ -266,30 +319,37 @@ public class DB {
         return Rows(dbHandle: handle, stmt: stmt!)
     }
 
-    public func queryFirst(_ sql: String) throws -> Rows.Row {
-        var rows = try query(sql)
+    public func query(_ sql: String, params: SQLDataType?...) throws -> Rows {
+        return try query(sql, params: params)
+    }
+
+    public func queryFirst(_ sql: String, params: SQLDataType?...) throws -> Rows.Row? {
+        var rows = try query(sql, params: params)
         defer {
             rows.close()
         }
         guard let row = rows.next() else {
-            throw Error(description: "No rows!")
+            return nil
         }
 
         return row
     }
 }
 
+///
+/// - Note: Rows retains a reference to the underlying statement allowing it to lazily fetch individual rows from the db as needed.
+/// - Note: The underlying stmt Rows holds reference too
+///
 public class Rows: IteratorProtocol, Sequence {
 
-    let dbHandle: OpaquePointer
-    var stmt: OpaquePointer?
+    var stmt: DB.Stmt?
 
-    let columnCount: Int32
-    let columnNames: [String]
-    let columnTypes: [ColumnType]
+    /// TODO(vdka): Read these lazily
+    public let columnCount: Int32
+    public let columnNames: [String]
+    public let columnTypes: [ColumnType]
 
     init(dbHandle: OpaquePointer, stmt: OpaquePointer) {
-        self.dbHandle = dbHandle
         self.stmt = stmt
 
         self.columnCount = sqlite3_column_count(stmt)
@@ -311,7 +371,7 @@ public class Rows: IteratorProtocol, Sequence {
         self.close()
     }
 
-    func close() {
+    public func close() {
         // The error returned by finalize is indicative of the error returned by the last evaluation of stmt.
         // Hence, we can ignore it.
         _ = sqlite3_finalize(stmt)
@@ -446,15 +506,9 @@ public class Rows: IteratorProtocol, Sequence {
     public class Row {
         public var columns: [Column?]
         var scanIndex: Int = 0
-        // FIXME(vdka): Investigate some sort of threadlocal storage for this then, raise it out off of Row to avoid alloc's
-        var data = UnsafeMutableRawBufferPointer.allocate(count: 1024) // start with 1kb
 
         init(columns: [Column?]) {
             self.columns = columns
-        }
-
-        deinit {
-            data.deallocate()
         }
 
         /// Resets the current scanIndex back to 0
@@ -514,12 +568,9 @@ public class Rows: IteratorProtocol, Sequence {
             }
 
             let storage = UnsafeMutableRawBufferPointer.allocate(count: MemoryLayout<T>.size)
-            _ = storage.initializeMemory(as: UInt8.self, from: repeatElement(0, count: MemoryLayout<T>.size))
             defer {
                 storage.deallocate()
             }
-
-            var value = storage.baseAddress!.assumingMemoryBound(to: aggregateType).pointee
 
             for (offset, ptype) in zip(offsets, types) {
 
@@ -545,7 +596,7 @@ public class Rows: IteratorProtocol, Sequence {
                 scanIndex += 1
             }
 
-            return value
+            return storage.baseAddress!.assumingMemoryBound(to: aggregateType).pointee
         }
     }
 }
@@ -557,4 +608,34 @@ func extensions(of type: Any.Type) -> AnyExtensions.Type {
         UnsafeMutableRawPointer(mutating: pointer).assumingMemoryBound(to: Any.Type.self).pointee = type
     }
     return extensions
+}
+
+extension DB {
+    func enableTracing() {
+
+        if #available(OSX 10.12, *) {
+            sqlite3_trace_v2(handle, UInt32(SQLITE_TRACE_STMT | SQLITE_TRACE_ROW | SQLITE_TRACE_CLOSE), { trace, _, p, t -> Int32 in
+
+                switch Int32(trace) {
+                case SQLITE_TRACE_STMT:
+                    let str = String(validatingUTF8: t!.assumingMemoryBound(to: Int8.self))!
+                    print(str)
+
+                case SQLITE_TRACE_ROW:
+                    print("Got row for stmt \(p!)")
+
+                case SQLITE_TRACE_CLOSE:
+                    break
+
+                case SQLITE_TRACE_PROFILE:
+                    break
+
+                default:
+                    fatalError()
+                }
+
+                return 0
+            }, nil)
+        }
+    }
 }

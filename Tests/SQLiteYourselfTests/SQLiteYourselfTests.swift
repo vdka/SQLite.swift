@@ -51,9 +51,13 @@ class SQLiteYourselfTests: XCTestCase {
 
         let users: [User] = [u1, u2, u3, u4]
 
+        let tx = try! db.begin()
+
         for user in users {
-            try! db.exec("INSERT INTO users (first_name, last_name, age, email) VALUES (?, ?, ?, ?)", params: user.firstName, user.lastName, user.age, user.email)
+            try! tx.exec("INSERT INTO users (first_name, last_name, age, email) VALUES (?, ?, ?, ?)", params: user.firstName, user.lastName, user.age, user.email)
         }
+
+        try! tx.commit()
 
         for _ in 0 ..< 1 {
             let rows = try! db.query("SELECT first_name, last_name, age, email FROM users ORDER BY age ASC")
@@ -64,14 +68,14 @@ class SQLiteYourselfTests: XCTestCase {
                 XCTAssertEqual(user, expectedUser)
             }
 
-            let govEmployee = try! db.queryFirst("SELECT first_name, last_name, age, email FROM users WHERE email LIKE '%@%.gov'").scan(User.self)
+            let govEmployee = try! db.queryFirst("SELECT first_name, last_name, age, email FROM users WHERE email LIKE '%@%.gov'")!.scan(User.self)
             XCTAssertEqual(govEmployee, u3)
 
             let namesOf30YearOlds = try! db.query("SELECT first_name, last_name FROM users WHERE age > 30 AND age < 40").map({ $0.scan((String, String).self) })
             print(namesOf30YearOlds)
         }
 
-        let (id, email) = try! db.queryFirst("SELECT id, email FROM users").scan((Int, String).self)
+        let (id, email) = try! db.queryFirst("SELECT id, email FROM users")!.scan((Int, String).self)
     }
 
     static var allTests = [
