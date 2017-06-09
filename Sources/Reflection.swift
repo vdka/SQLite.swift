@@ -1,13 +1,48 @@
+
+
 //
-//  Reflection.swift
-//  SQLiteYourself
-//
-//  Created by Ethan Jackwitz on 6/8/17.
+// This file is derived from the ABI notes available as part of the Swift Open Source project.
+//     https://github.com/apple/swift/blob/master/docs/ABI.rst
 //
 
-import Foundation
+protocol AnyExtensions {}
 
-struct Metadata : MetadataType {
+extension AnyExtensions {
+    static func write(_ value: Any, to storage: UnsafeMutableRawPointer) {
+        guard let this = value as? Self else {
+            fatalError("Internal logic error")
+        }
+        storage.assumingMemoryBound(to: self).initialize(to: this)
+    }
+}
+
+protocol MetadataType {
+    var pointer: UnsafeRawPointer { get }
+    static var kind: Metadata.Kind? { get }
+}
+
+extension MetadataType {
+    var valueWitnessTable: ValueWitnessTable {
+        return ValueWitnessTable(pointer: pointer.assumingMemoryBound(to: UnsafeRawPointer.self).advanced(by: -1).pointee)
+    }
+
+    var kind: Metadata.Kind {
+        return Metadata.Kind(flag: pointer.assumingMemoryBound(to: Int.self).pointee)
+    }
+
+    init(pointer: UnsafeRawPointer) {
+        self = unsafeBitCast(pointer, to: Self.self)
+    }
+
+    init?(type: Any.Type) {
+        self.init(pointer: unsafeBitCast(type, to: UnsafeRawPointer.self))
+        if let kind = type(of: self).kind, kind != self.kind {
+            return nil
+        }
+    }
+}
+
+struct Metadata: MetadataType {
     var pointer: UnsafeRawPointer
 
     init(type: Any.Type) {
@@ -57,32 +92,6 @@ extension Metadata {
     }
 }
 
-protocol MetadataType {
-    var pointer: UnsafeRawPointer { get }
-    static var kind: Metadata.Kind? { get }
-}
-
-extension MetadataType {
-    var valueWitnessTable: ValueWitnessTable {
-        return ValueWitnessTable(pointer: pointer.assumingMemoryBound(to: UnsafeRawPointer.self).advanced(by: -1).pointee)
-    }
-
-    var kind: Metadata.Kind {
-        return Metadata.Kind(flag: pointer.assumingMemoryBound(to: Int.self).pointee)
-    }
-
-    init(pointer: UnsafeRawPointer) {
-        self = unsafeBitCast(pointer, to: Self.self)
-    }
-
-    init?(type: Any.Type) {
-        self.init(pointer: unsafeBitCast(type, to: UnsafeRawPointer.self))
-        if let kind = type(of: self).kind, kind != self.kind {
-            return nil
-        }
-    }
-}
-
 // https://github.com/apple/swift/blob/master/lib/IRGen/ValueWitness.h
 struct ValueWitnessTable {
     var pointer: UnsafeRawPointer
@@ -127,4 +136,166 @@ struct _ValueWitnessTable {
     let stride: Int
 }
 
-func getPropertyDetails() -> []
+
+extension Metadata {
+    // https://github.com/apple/swift/blob/master/docs/ABI.rst#tuple-metadata
+    struct Tuple: MetadataType {
+        static let kind: Kind? = .tuple
+        var pointer: UnsafeRawPointer
+    }
+}
+
+extension Metadata.Tuple {
+
+    var numberOfElements: Int {
+        let offset = 1
+        let pointer = UnsafeRawPointer(self.pointer.assumingMemoryBound(to: Int.self).advanced(by: offset)).assumingMemoryBound(to: Int.self)
+        return pointer.pointee
+    }
+
+    var elementTypes: [Any.Type] {
+        let offset = 3
+        let pointer = UnsafeRawPointer(self.pointer.assumingMemoryBound(to: Int.self).advanced(by: offset)).assumingMemoryBound(to: Int.self)
+
+        var types: [Any.Type] = []
+
+        for index in 0..<numberOfElements {
+            let type = unsafeBitCast(pointer.advanced(by: 2 * index).pointee, to: Any.Type.self)
+            types.append(type)
+        }
+
+        return types
+    }
+
+    var elementOffsets: [Int] {
+        let offset = 3
+        let pointer = UnsafeRawPointer(self.pointer.assumingMemoryBound(to: Int.self).advanced(by: offset)).assumingMemoryBound(to: Int.self)
+
+        var offsets: [Int] = []
+
+        for index in 0..<numberOfElements {
+            offsets.append(pointer.advanced(by: 2 * index + 1).pointee)
+        }
+
+        return offsets
+    }
+}
+
+extension Metadata {
+    struct Struct: MetadataType {
+        static let kind: Kind? = .struct
+        var pointer: UnsafeRawPointer
+    }
+}
+
+extension Metadata.Struct {
+    var nominalTypeDescriptorOffset: Int {
+        return 1
+    }
+
+    var nominalTypeDescriptorPointer: UnsafeRawPointer {
+        let pointer = self.pointer.assumingMemoryBound(to: Int.self)
+        let base = pointer.advanced(by: nominalTypeDescriptorOffset)
+        return UnsafeRawPointer(base).advanced(by: base.pointee)
+    }
+
+    var fieldOffsets: [Int] {
+        let offset = 3
+        let base = UnsafeRawPointer(self.pointer.assumingMemoryBound(to: Int.self).advanced(by: offset)).assumingMemoryBound(to: Int.self)
+
+        var offsets: [Int] = []
+
+        for index in 0..<numberOfFields {
+            offsets.append(base.advanced(by: index).pointee)
+        }
+
+        return offsets
+    }
+
+    // NOTE: The rest of the struct Metadata is stored on the NominalTypeDescriptor
+
+    // NOTE(vdka): Not sure why but all the offset's mentioned in the ABI for Nominal Type Descriptors are off by 1. The pointer we have points to the mangled name offset.
+
+    var mangledName: String { // offset 0
+
+        let offset = nominalTypeDescriptorPointer.assumingMemoryBound(to: Int32.self).pointee
+        let p = nominalTypeDescriptorPointer.advanced(by: numericCast(offset)).assumingMemoryBound(to: CChar.self)
+        return String(cString: p)
+    }
+
+    var numberOfFields: Int { // offset 1
+
+        let offset = 1
+        return numericCast(nominalTypeDescriptorPointer.load(fromByteOffset: offset * halfword, as: Int32.self))
+    }
+
+    var fieldNames: [String] { // offset 3
+
+        let offset = 3
+        let base = nominalTypeDescriptorPointer.advanced(by: offset * halfword)
+
+        let dataOffset = base.load(as: Int32.self)
+        let fieldNamesPointer = base.advanced(by: numericCast(dataOffset))
+
+        return Array(utf8Strings: fieldNamesPointer.assumingMemoryBound(to: CChar.self))
+    }
+
+    //
+    // from ABI.rst:
+    //
+    // The field type accessor is a function pointer at offset 5. If non-null, the function takes a pointer to an
+    //   instance of type metadata for the nominal type, and returns a pointer to an array of type metadata
+    //   references for the types of the fields of that instance. The order matches that of the field offset vector
+    //   and field name list.
+    typealias FieldsTypeAccessor = @convention(c) (UnsafeRawPointer) -> UnsafePointer<UnsafeRawPointer>
+    var fieldTypesAccessor: FieldsTypeAccessor? { // offset 4
+
+        let offset = 4
+        let base = nominalTypeDescriptorPointer.advanced(by: offset * halfword)
+
+        let dataOffset = base.load(as: Int32.self)
+        guard dataOffset != 0 else { return nil }
+
+        let dataPointer = base.advanced(by: numericCast(dataOffset))
+        return unsafeBitCast(dataPointer, to: FieldsTypeAccessor.self)
+    }
+
+    var fieldTypes: [Any.Type]? {
+        guard let accessorFunction = fieldTypesAccessor else { return nil }
+
+        var types: [Any.Type] = []
+        for fieldIndex in 0..<numberOfFields {
+            let pointer = accessorFunction(nominalTypeDescriptorPointer).advanced(by: fieldIndex).pointee
+            let type = unsafeBitCast(pointer, to: Any.Type.self)
+            types.append(type)
+        }
+
+        return types
+    }
+}
+
+
+// MARK: - Helpers
+
+let word = min(MemoryLayout<Int>.size, MemoryLayout<Int64>.size)
+let halfword = word / 2
+
+extension Array where Element == String {
+
+    init(utf8Strings: UnsafePointer<CChar>) {
+        var strings = [String]()
+        var pointer = utf8Strings
+
+        while true {
+            let string = String(cString: pointer)
+            strings.append(string)
+            while pointer.pointee != 0 {
+                pointer = pointer.advanced(by: 1)
+            }
+            pointer = pointer.advanced(by: 1)
+            guard pointer.pointee != 0 else { break }
+        }
+        self = strings
+    }
+}
+

@@ -485,15 +485,32 @@ public class Rows: IteratorProtocol, Sequence {
             return columns[scanIndex].map(T.get(from:))
         }
 
-        public func scan<T>(_ type: T.Type) -> T {
+        public func scan<T>(_ aggregateType: T.Type) -> T {
 
-            let md = Metadata(type: type)
+            let metadata = Metadata(type: aggregateType)
 
-            guard case .struct = md.kind else {
+            var types: [Any.Type]
+            var offsets: [Int]
+            switch metadata.kind {
+            case .struct:
+                let structMetadata = unsafeBitCast(metadata, to: Metadata.Struct.self)
+                guard let fieldTypes = structMetadata.fieldTypes else {
+                    fatalError("Unable to find subtypes of \(aggregateType)")
+                }
+                types = fieldTypes
+                offsets = structMetadata.fieldOffsets
+
+            case .tuple:
+                let tupleMetadata = unsafeBitCast(metadata, to: Metadata.Tuple.self)
+                types = tupleMetadata.elementTypes
+                offsets = tupleMetadata.elementOffsets
+
+            default:
                 fatalError("""
-                    Non struct values are not current supported by this method
+                    \(metadata.kind) is not supported by SQLiteYourself.
+                    Only tuple and struct types are currently supported by this method
                     We are working on this.
-                """)
+                    """)
             }
 
             let storage = UnsafeMutableRawBufferPointer.allocate(count: MemoryLayout<T>.size)
@@ -502,17 +519,15 @@ public class Rows: IteratorProtocol, Sequence {
                 storage.deallocate()
             }
 
-            var value = storage.baseAddress!.assumingMemoryBound(to: type).pointee
+            var value = storage.baseAddress!.assumingMemoryBound(to: aggregateType).pointee
 
-            let props = try! properties(type)
+            for (offset, ptype) in zip(offsets, types) {
 
-            for prop in props {
-
-                guard let propertyType = prop.type as? SQLDataType.Type else {
+                guard let propertyType = ptype as? SQLDataType.Type else {
 
                     fatalError("""
 
-                        ERROR: Unsupported type (\(prop.type)) in type \(type) during call to \(#function)
+                        ERROR: Unsupported type (\(ptype)) in type \(aggregateType) during call to \(#function)
 
                         SQLiteYourself only has support for aggregate types that contain type conformant to the SQLDataType protocol.
                         If you beleive your type should conform to this, you can implement the conformance yourself and you will be able to read and write
@@ -524,11 +539,22 @@ public class Rows: IteratorProtocol, Sequence {
                     """)
                 }
 
-                try! set(propertyType.get(from: columns[scanIndex]!), key: prop.key, for: &value)
+                let propertyValue = propertyType.get(from: columns[scanIndex]!)
+
+                extensions(of: propertyType).write(propertyValue, to: storage.baseAddress!.advanced(by: offset))
                 scanIndex += 1
             }
 
             return value
         }
     }
+}
+
+func extensions(of type: Any.Type) -> AnyExtensions.Type {
+    struct Extensions : AnyExtensions {}
+    var extensions: AnyExtensions.Type = Extensions.self
+    withUnsafePointer(to: &extensions) { pointer in
+        UnsafeMutableRawPointer(mutating: pointer).assumingMemoryBound(to: Any.Type.self).pointee = type
+    }
+    return extensions
 }
