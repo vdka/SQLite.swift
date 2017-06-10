@@ -16,6 +16,16 @@ extension AnyExtensions {
     }
 }
 
+/// Magic courtesy of Zewo/Reflection
+func extensions(of type: Any.Type) -> AnyExtensions.Type {
+    struct Extensions : AnyExtensions {}
+    var extensions: AnyExtensions.Type = Extensions.self
+    withUnsafePointer(to: &extensions) { pointer in
+        UnsafeMutableRawPointer(mutating: pointer).assumingMemoryBound(to: Any.Type.self).pointee = type
+    }
+    return extensions
+}
+
 protocol MetadataType {
     var pointer: UnsafeRawPointer { get }
     static var kind: Metadata.Kind? { get }

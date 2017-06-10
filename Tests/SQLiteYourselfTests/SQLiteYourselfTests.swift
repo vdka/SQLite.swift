@@ -23,15 +23,15 @@ class SQLiteYourselfTests: XCTestCase {
         super.setUp()
 
         databasePath = (Bundle(for: type(of: self)).bundlePath as NSString).appendingPathComponent("db.sqlite")
-        guard FileManager.default.fileExists(atPath: databasePath) else {
-            return
+        if FileManager.default.fileExists(atPath: databasePath) {
+            try! FileManager.default.removeItem(atPath: databasePath)
         }
-        try! FileManager.default.removeItem(atPath: databasePath)
     }
 
-    func testExample() {
+    func testGeneralUsage() {
 
         let db = try! DB.open(path: databasePath)
+        db.enableTrace(options: [.traceProfile, .traceClose])
 
         try! db.exec("""
                 CREATE TABLE users (
@@ -53,8 +53,11 @@ class SQLiteYourselfTests: XCTestCase {
 
         let tx = try! db.begin()
 
-        for user in users {
+        for (index, user) in users.enumerated() {
             try! tx.exec("INSERT INTO users (first_name, last_name, age, email) VALUES (?, ?, ?, ?)", params: user.firstName, user.lastName, user.age, user.email)
+
+            XCTAssertEqual(index + 1, tx.lastInsertId)
+            XCTAssertEqual(1, tx.rowsAffected)
         }
 
         try! tx.commit()
@@ -71,14 +74,20 @@ class SQLiteYourselfTests: XCTestCase {
             let govEmployee = try! db.queryFirst("SELECT first_name, last_name, age, email FROM users WHERE email LIKE '%@%.gov'")!.scan(User.self)
             XCTAssertEqual(govEmployee, u3)
 
-            let namesOf30YearOlds = try! db.query("SELECT first_name, last_name FROM users WHERE age > 30 AND age < 40").map({ $0.scan((String, String).self) })
-            print(namesOf30YearOlds)
+            let namesOf30YearOlds = try! db.query("SELECT first_name, last_name FROM users WHERE age > 30 AND age < 40 ORDER BY age ASC").map({ $0.scan((String, String).self) })
+            for (received, expectedUser) in zip(namesOf30YearOlds, [u4, u3, u1]) {
+                let expectedTuple = (expectedUser.firstName, expectedUser.lastName)
+                XCTAssertEqual(received.0, expectedTuple.0)
+                XCTAssertEqual(received.1, expectedTuple.1)
+            }
         }
 
-        let (id, email) = try! db.queryFirst("SELECT id, email FROM users")!.scan((Int, String).self)
+        db.close()
     }
 
+
+
     static var allTests = [
-        ("testExample", testExample),
+        ("testGeneralUsage", testGeneralUsage),
     ]
 }
