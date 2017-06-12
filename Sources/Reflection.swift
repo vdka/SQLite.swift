@@ -14,6 +14,17 @@ extension AnyExtensions {
         }
         storage.assumingMemoryBound(to: self).initialize(to: this)
     }
+
+    static var isOptional: Bool {
+
+        let metadata = Metadata(type: self)
+
+        guard case .optional = metadata.kind else {
+            return false
+        }
+
+        return true
+    }
 }
 
 /// Magic courtesy of Zewo/Reflection
@@ -46,8 +57,15 @@ extension MetadataType {
 
     init?(type: Any.Type) {
         self.init(pointer: unsafeBitCast(type, to: UnsafeRawPointer.self))
-        if let kind = type(of: self).kind, kind != self.kind {
-            return nil
+
+        switch (type(of: self).kind, self.kind) {
+        case (.enum?, .optional): // an optional is an enum with extra
+            break
+
+        default:
+            if let kind = type(of: self).kind, kind != self.kind {
+                return nil
+            }
         }
     }
 }
@@ -277,6 +295,98 @@ extension Metadata.Struct {
         for fieldIndex in 0..<numberOfFields {
             let pointer = accessorFunction(nominalTypeDescriptorPointer).advanced(by: fieldIndex).pointee
             let type = unsafeBitCast(pointer, to: Any.Type.self)
+            types.append(type)
+        }
+
+        return types
+    }
+}
+
+extension Metadata {
+    // https://github.com/apple/swift/blob/master/docs/ABI.rst#enum-metadata
+    struct Enum: MetadataType {
+        static let kind: Kind? = .enum
+        var pointer: UnsafeRawPointer
+    }
+}
+
+extension Metadata.Enum {
+    var nominalTypeDescriptorOffset: Int {
+        return 1
+    }
+
+    var nominalTypeDescriptorPointer: UnsafeRawPointer {
+        let pointer = self.pointer.assumingMemoryBound(to: Int.self)
+        let base = pointer.advanced(by: nominalTypeDescriptorOffset)
+        return UnsafeRawPointer(base).advanced(by: base.pointee)
+    }
+
+    var mangledName: String { // offset 0
+
+        let offset = nominalTypeDescriptorPointer.assumingMemoryBound(to: Int32.self).pointee
+        let p = nominalTypeDescriptorPointer.advanced(by: numericCast(offset)).assumingMemoryBound(to: CChar.self)
+        return String(cString: p)
+    }
+
+    var numberOfPayloadCases: Int { // offset 1
+
+        let offset = 1
+        let val = nominalTypeDescriptorPointer.load(fromByteOffset: offset * halfword, as: Int32.self)
+        return numericCast(val & 0x0FFF)
+    }
+
+    var payloadSizeOffset: Int { // offset 1
+        let offset = 1
+        let val = nominalTypeDescriptorPointer.load(fromByteOffset: offset * halfword, as: Int32.self)
+        return numericCast(val & 0xF000)
+    }
+
+    var numberOfNoPayloadCases: Int { // offset 2
+        let offset = 2
+        let val = nominalTypeDescriptorPointer.load(fromByteOffset: offset * halfword, as: Int32.self)
+        return numericCast(val)
+    }
+
+    var numberOfCases: Int {
+        return numberOfPayloadCases + numberOfNoPayloadCases
+    }
+
+    // Order is payload cases first then non payload cases, in those segments the order is source order.
+    var caseNames: [String] { // offset 3
+        let offset = 3
+        let base = nominalTypeDescriptorPointer.advanced(by: offset * halfword)
+
+        let dataOffset = base.load(as: Int32.self)
+        let fieldNamesPointer = base.advanced(by: numericCast(dataOffset))
+
+        return Array(utf8Strings: fieldNamesPointer.assumingMemoryBound(to: CChar.self))
+    }
+
+    typealias CaseTypeAccessor = @convention(c) (UnsafeRawPointer) -> UnsafePointer<UnsafeRawPointer>
+    var caseTypesAccessor: CaseTypeAccessor? { // offset 4
+
+        let offset = 4
+        let base = nominalTypeDescriptorPointer.advanced(by: offset * halfword)
+
+        let dataOffset = base.load(as: Int32.self)
+        guard dataOffset != 0 else { return nil }
+
+        let dataPointer = base.advanced(by: numericCast(dataOffset))
+        return unsafeBitCast(dataPointer, to: CaseTypeAccessor.self)
+    }
+
+    var caseTypes: [Any.Type]? {
+        guard let accessorFunction = caseTypesAccessor else { return nil }
+
+        var types: [Any.Type] = []
+        for caseIndex in 0..<numberOfPayloadCases {
+            let pointer = accessorFunction(self.pointer).advanced(by: caseIndex).pointee
+
+            // > the least significant bit of each element in the result is set if the enum case is an indirect case.
+            var typePointer = Int(bitPattern: pointer)
+            typePointer &= ~1
+
+            let type = unsafeBitCast(typePointer, to: Any.Type.self)
             types.append(type)
         }
 

@@ -2,6 +2,7 @@ import XCTest
 @testable import SQLiteYourself
 
 struct User: Equatable {
+
     let firstName: String
     let lastName: String
     let age: Float
@@ -85,9 +86,58 @@ class SQLiteYourselfTests: XCTestCase {
         db.close()
     }
 
+    func testNullableFields() {
 
+        let db = try! DB.open(path: databasePath)
+        db.enableTrace(options: [.traceProfile, .traceClose])
+
+        try! db.exec("""
+                CREATE TABLE users (
+                    id INTEGER,
+                    first_name TEXT NOT NULL,
+                    last_name TEXT NOT NULL,
+                    age FLOAT NOT NULL,
+                    email TEXT UNIQUE,
+                    PRIMARY KEY(id)
+                );
+            """)
+
+
+
+        let u1: (String, String, Float, String?) = ("Thurstan", "Bussy", 34, "tbussy0@w3.org")
+        let u2: (String, String, Float, String?) = ("Zoe", "Shufflebotham", 66, nil)
+        let u3: (String, String, Float, String?) = ("Constancia", "McKinstry", 33, nil)
+        let u4: (String, String, Float, String?) = ("Valma", "Mulvin", 31, "vmulvin3@ustream.tv")
+
+        let users = [u1, u2, u3, u4]
+
+        let tx = try! db.begin()
+
+        for (index, user) in users.enumerated() {
+            try! tx.exec("INSERT INTO users (first_name, last_name, age, email) VALUES (?, ?, ?, ?)", params: user.0, user.1, user.2, user.3)
+
+            XCTAssertEqual(index + 1, tx.lastInsertId)
+            XCTAssertEqual(1, tx.rowsAffected)
+        }
+
+        try! tx.commit()
+
+        let rows = try! db.query("SELECT first_name, last_name, age, email FROM users WHERE email IS NULL")
+        for (row, expected) in zip(rows, [u2, u3]) {
+            var tuple = row.scan((String, String, Float, String?).self)
+
+            withUnsafeBytes(of: &tuple.3) {
+                print(Array($0))
+            }
+            XCTAssertEqual(tuple.0, expected.0)
+            XCTAssertEqual(tuple.1, expected.1)
+            XCTAssertEqual(tuple.2, expected.2)
+            XCTAssertEqual(tuple.3, expected.3)
+        }
+    }
 
     static var allTests = [
         ("testGeneralUsage", testGeneralUsage),
+        ("testNullableFields", testNullableFields),
     ]
 }

@@ -159,8 +159,23 @@ public class Tx: DBInterface {
     }
 
     public enum Mode {
+
+        /// Deferred means that no locks are acquired on the database until the database is first accessed.
+        /// Thus with a deferred transaction, the BEGIN statement itself does nothing to the filesystem.
+        /// Locks are not acquired until the first read or write operation.
+        /// The first read operation against a database creates a SHARED lock and the first write operation creates a RESERVED lock.
+        /// Because the acquisition of locks is deferred until they are needed, it is possible that another thread or process could
+        ///  create a separate transaction and write to the database after the BEGIN on the current thread has executed.
         case deferred
+
+        /// If the transaction is immediate, then RESERVED locks are acquired on all databases as soon as the BEGIN command is executed,
+        ///  without waiting for the database to be used. After a BEGIN IMMEDIATE, no other database connection will be able to write to
+        ///  the database or do a BEGIN IMMEDIATE or BEGIN EXCLUSIVE. Other processes can continue to read from the database, however.
         case immediate
+
+        /// An exclusive transaction causes EXCLUSIVE locks to be acquired on all databases.
+        /// After a BEGIN EXCLUSIVE, no other database connection except for read_uncommitted connections will be able to read the
+        ///  database and no other connection without exception will be able to write the database until the transaction is complete.
         case exclusive
     }
 }
@@ -213,6 +228,9 @@ public class DB: DBInterface {
         sqlite3_close_v2(handle)
     }
 
+    /// Begin starts a transaction
+    /// - Parameter mode: The mode to begin the transaction with
+    /// - SeeAlso: Tx.Mode
     public func begin(_ mode: Tx.Mode = .deferred) throws -> Tx {
 
         let tx = Tx(handle: handle)
@@ -254,10 +272,14 @@ extension DB {
 
 extension DBInterface {
 
+    /// The number of rows modified, inserted or deleted by the most recently completed INSERT, UPDATE or DELETE statement.
+    /// - Note: Changes caused by triggers, foreign key actions or REPLACE constraint resolution are not counted.
     public var rowsAffected: Int {
         return Int(sqlite3_changes(handle))
     }
 
+    /// The rowid of the most recent successful INSERT.
+    /// - SeeAlso: https://sqlite.org/c3ref/last_insert_rowid.html
     public var lastInsertId: Int {
         return Int(sqlite3_last_insert_rowid(handle))
     }
@@ -302,6 +324,9 @@ extension DBInterface {
         }
     }
 
+    /// Exec executes a query without returning any rows
+    /// - SeeAlso: lastInsertId
+    /// - SeeAlso: rowsAffected
     public func exec(_ sql: StaticString, params: SQLDataType?...) throws {
 
         var stmt: DB.Stmt?
@@ -347,10 +372,18 @@ extension DBInterface {
         return Rows(stmt: stmt!)
     }
 
+    /// Executes a query that returns rows, typically a SELECT. The args are for any placeholder parameters in the query.
+    /// ## Example
+    /// ```swift
+    ///    let rows = try db.query("SELECT first_name, last_name, age, email FROM users ORDER BY age ASC")
     public func query(_ sql: StaticString, params: SQLDataType?...) throws -> Rows {
         return try query(sql, params: params)
     }
 
+    /// Executes a query that is expected to return at most one row. Errors are deferred until Row's Scan method is called.
+    /// ## Example
+    /// ```swift
+    ///    let employee = try! db.queryFirst("SELECT * FROM users WHERE email LIKE '%@%.gov'")?.scan(User.self)
     public func queryFirst(_ sql: StaticString, params: SQLDataType?...) throws -> Rows.Row? {
         var rows = try query(sql, params: params)
         defer {
@@ -364,15 +397,13 @@ extension DBInterface {
     }
 }
 
-///
+/// Rows is the result of a query. It represents a sequence of individal Rows (`Rows.Row`)
+/// - SeeAlso: Rows.Row
 /// - Note: Rows retains a reference to the underlying statement allowing it to lazily fetch individual rows from the db as needed.
-/// - Note: The underlying stmt Rows holds reference too
-///
 public class Rows: IteratorProtocol, Sequence {
 
     var stmt: DB.Stmt?
 
-    /// TODO(vdka): Read these lazily
     public let columnCount: Int32
     public let columnNames: [String]
     public let columnTypes: [ColumnType]
@@ -380,7 +411,7 @@ public class Rows: IteratorProtocol, Sequence {
     init(stmt: DB.Stmt) {
         self.stmt = stmt
 
-        self.columnCount = sqlite3_column_count(stmt)
+        self.columnCount = numericCast(sqlite3_column_count(stmt))
 
         var columnNames: [String] = []
         var columnTypes: [ColumnType] = []
@@ -399,6 +430,7 @@ public class Rows: IteratorProtocol, Sequence {
         self.close()
     }
 
+    /// Close the rows preventing further enumeration. `next()` will return nil after a call to close
     public func close() {
         // The error returned by finalize is indicative of the error returned by the last evaluation of stmt.
         // Hence, we can ignore it.
@@ -491,6 +523,7 @@ public class Rows: IteratorProtocol, Sequence {
         }
     }
 
+    // TODO(vdka): Expose the column named types directly also.
     static func getColumnType(stmt: OpaquePointer, index: Int32) -> ColumnType {
 
         // Column types - http://www.sqlite.org/datatype3.html (section 2.2 table column 1)
@@ -531,6 +564,8 @@ public class Rows: IteratorProtocol, Sequence {
         return ColumnType.text
     }
 
+    /// Row represents a single row of data. Values can be read out using the `scan` functions
+    /// - Note: Row is not read lazily
     public class Row {
         public var columns: [Column?]
         var scanIndex: Int = 0
@@ -549,6 +584,10 @@ public class Rows: IteratorProtocol, Sequence {
             return columns[index].map(T.get(from:))
         }
 
+        /// Reads a single non nil value of type `type` from the column at `scanIndex`
+        /// - Precondition: `columns[scanIndex] != nil`
+        /// - Precondition: `scanIndex < columns.count`
+        /// - Note: increments `scanIndex`
         public func scan<T: SQLDataType>(_ type: T.Type) -> T {
             assert(scanIndex < columns.count)
             defer {
@@ -558,6 +597,9 @@ public class Rows: IteratorProtocol, Sequence {
             return T.get(from: columns[scanIndex]!)
         }
 
+        /// Reads a single nullable (Optional) value of type `type` from the column at `scanIndex`
+        /// - Precondition: `scanIndex < columns.count`
+        /// - Note: increments `scanIndex`
         public func scan<T: SQLDataType>(_ type: T.Type) -> Optional<T> {
             assert(scanIndex < columns.count)
             defer {
@@ -567,11 +609,21 @@ public class Rows: IteratorProtocol, Sequence {
             return columns[scanIndex].map(T.get(from:))
         }
 
+        /// Allocates memory for the aggregate (Tuple or Struct) `T` and reads values from the Row in order
+        ///   returning an instance of T.
+        /// - Precondition: `scanIndex == 0`
+        /// - Precondition: The number of members in type `T` must equal `columns.count`
+        /// - Precondition: Each member type of the type `T` must conform to `SQLDataType`
+        /// - Note: increments `scanIndex` to `columns.count`
+        /// ```swift
+        ///    db.queryFirst("SELECT name, age, email FROM users")?.scan((String, Int, String).self)
         public func scan<T>(_ aggregateType: T.Type) -> T {
+            precondition(scanIndex == 0)
 
             let metadata = Metadata(type: aggregateType)
 
             var types: [Any.Type]
+            var nullable: [Bool]
             var offsets: [Int]
             switch metadata.kind {
             case .struct:
@@ -595,12 +647,21 @@ public class Rows: IteratorProtocol, Sequence {
                     """)
             }
 
-            let storage = UnsafeMutableRawBufferPointer.allocate(count: MemoryLayout<T>.size)
-            defer {
+            precondition(types.count == columns.count)
+
+            let storage = UnsafeMutableRawBufferPointer.allocate(count: MemoryLayout<T>.size); defer {
                 storage.deallocate()
             }
 
-            for (offset, ptype) in zip(offsets, types) {
+            for (offset, var ptype) in zip(offsets, types) {
+
+                var allowNull = false
+
+                if extensions(of: ptype).isOptional {
+                    allowNull = true
+                    let propertyMetadata = Metadata.Enum(type: ptype)!
+                    ptype = propertyMetadata.caseTypes!.first!
+                }
 
                 guard let propertyType = ptype as? SQLDataType.Type else {
 
@@ -618,7 +679,25 @@ public class Rows: IteratorProtocol, Sequence {
                     """)
                 }
 
-                let propertyValue = propertyType.get(from: columns[scanIndex]!)
+                guard let columnValue = columns[scanIndex] else {
+                    guard allowNull else {
+                        fatalError("Found null value in call to \(#function) where output type was non Optional")
+                    }
+
+                    // And now for the tricky part
+
+                    let optionalSize = Metadata(type: ptype).valueWitnessTable.size
+
+                    // An `Optional` is the size of the generic type `Wrapped` + 1 byte.
+                    // An `Optional.none` value is all zero's with the last byte being `1`
+
+                    storage.baseAddress!.advanced(by: offset).initializeMemory(as: Int8.self, at: 0, count: optionalSize - 1, to: 0)
+                    storage.baseAddress!.advanced(by: offset).advanced(by: optionalSize).assumingMemoryBound(to: Int8.self).initialize(to: 1)
+                    scanIndex += 1
+                    continue
+                }
+
+                let propertyValue = propertyType.get(from: columnValue)
 
                 extensions(of: propertyType).write(propertyValue, to: storage.baseAddress!.advanced(by: offset))
                 scanIndex += 1
@@ -725,6 +804,8 @@ extension DB {
         public static let traceStmt    = TraceOptions(rawValue: numericCast(SQLITE_TRACE_STMT))
     }
 
+    /// Enable tracing on the database
+    /// - SeeAlso: DB.TraceOptions
     public func enableTrace(options: TraceOptions = [.traceProfile]) {
 
         if #available(OSX 10.12, *) {
@@ -737,6 +818,8 @@ extension DB {
         }
     }
 
+    /// Disable tracing on the database
+    /// - SeeAlso: DB.TraceOptions
     public func disableTrace() {
         if #available(OSX 10.12, *) {
             sqlite3_trace_v2(handle, 0, nil, nil)
