@@ -224,7 +224,11 @@ public class DB: DBInterface {
     }
 
     public func close() {
-        sqlite3_close_v2(handle)
+        if #available(OSX 10.10, iOS 8.2, *) {
+            sqlite3_close_v2(handle)
+        } else {
+            sqlite3_close(handle)
+        }
     }
 
     /// Begin starts a transaction
@@ -712,14 +716,23 @@ extension DB {
 
     @available(macOS 10.12, *)
     static func expandStmt(_ stmt: DB.Stmt) -> String {
-        let expanded = sqlite3_expanded_sql(stmt); defer {
-            sqlite3_free(expanded)
-        }
+        if #available(iOS 10.0, *) {
+            let expanded = sqlite3_expanded_sql(stmt); defer {
+                sqlite3_free(expanded)
+            }
 
-        guard let e = expanded, let string = String(validatingUTF8: e) else {
-            return "Error expanding SQL Stmt '\(stmt)' for trace"
+            guard let e = expanded, let string = String(validatingUTF8: e) else {
+                return "Error expanding SQL Stmt '\(stmt)' for trace"
+            }
+            return string
+        } else {
+
+            let expanded = UnsafeRawPointer(sqlite3_sql(stmt))?.assumingMemoryBound(to: CChar.self)
+            guard let e = expanded, let string = String(validatingUTF8: e) else {
+                return "Error expanding SQL Stmt '\(stmt)' for trace"
+            }
+            return string
         }
-        return string
     }
 
     static var tracerv1: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<Int8>?) -> Void = { c, sql in
@@ -807,7 +820,7 @@ extension DB {
     /// - SeeAlso: DB.TraceOptions
     public func enableTrace(options: TraceOptions = [.traceProfile]) {
 
-        if #available(OSX 10.12, *) {
+        if #available(OSX 10.12, iOS 10.0, *) {
             sqlite3_trace_v2(handle, options.rawValue, DB.tracerv2, nil)
         } else {
             sqlite3_trace(handle, DB.tracerv1, nil)
@@ -820,7 +833,7 @@ extension DB {
     /// Disable tracing on the database
     /// - SeeAlso: DB.TraceOptions
     public func disableTrace() {
-        if #available(OSX 10.12, *) {
+        if #available(OSX 10.12, iOS 10.0, *) {
             sqlite3_trace_v2(handle, 0, nil, nil)
         } else {
             sqlite3_trace(handle, nil, nil)
