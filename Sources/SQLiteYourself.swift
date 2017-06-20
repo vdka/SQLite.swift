@@ -1,6 +1,5 @@
 
 import Foundation
-import Reflection
 import SQLite3
 
 public enum Column {
