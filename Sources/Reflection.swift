@@ -58,12 +58,12 @@ extension MetadataType {
     init?(type: Any.Type) {
         self.init(pointer: unsafeBitCast(type, to: UnsafeRawPointer.self))
 
-        switch (type(of: self).kind, self.kind) {
+        switch (Swift.type(of: self).kind, self.kind) {
         case (.enum?, .optional): // an optional is an enum with extra
             break
 
         default:
-            if let kind = type(of: self).kind, kind != self.kind {
+            if let kind = Swift.type(of: self).kind, kind != self.kind {
                 return nil
             }
         }
