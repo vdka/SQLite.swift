@@ -354,7 +354,7 @@ extension DBInterface {
         }
     }
 
-    func query(_ sql: StaticString, params: [SQLDataType?]) throws -> Rows {
+    public func query(_ sql: StaticString, params: [SQLDataType?]) throws -> Rows {
 
         var stmt: DB.Stmt?
 
