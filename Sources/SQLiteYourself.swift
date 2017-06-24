@@ -116,6 +116,19 @@ extension Data: SQLDataType {
     }
 }
 
+extension URL: SQLDataType {
+    public static func get(from column: Column) -> URL {
+        guard case .text(let v) = column else {
+            fatalError()
+        }
+        return URL(string: v)!
+    }
+
+    public var sqlColumnValue: Column {
+        return Column.text(self.absoluteString)
+    }
+}
+
 public enum ColumnType: Int32 {
     case integer = 1 // SQLITE_INTEGER
     case float = 2 // SQLITE_FLOAT
