@@ -219,9 +219,9 @@ extension DBInterface {
     public func exec(_ sql: StaticString, params: SQLDataType?...) throws {
 
         var stmt: DB.Stmt?
-        var res = sql.withUTF8Buffer { p in
-            return p.baseAddress!.withMemoryRebound(to: CChar.self, capacity: sql.utf8CodeUnitCount) { p in
-                return sqlite3_prepare_v2(handle, p, numericCast(sql.utf8CodeUnitCount), &stmt, nil)
+        var res = sql.withUTF8Buffer { buffer in
+            return buffer.baseAddress!.withMemoryRebound(to: CChar.self, capacity: buffer.count) { p in
+                return sqlite3_prepare_v2(handle, p, numericCast(buffer.count), &stmt, nil)
             }
         }
 
@@ -245,8 +245,8 @@ extension DBInterface {
         var stmt: DB.Stmt?
 
         // This grabs the buffer from the static string `sql` without a copy and needs to jump a couple hoops to get to the expected type.
-        let res = sql.withUTF8Buffer { p in
-            return p.baseAddress!.withMemoryRebound(to: CChar.self, capacity: sql.utf8CodeUnitCount) { p in
+        let res = sql.withUTF8Buffer { buffer in
+            return buffer.baseAddress!.withMemoryRebound(to: CChar.self, capacity: buffer.count) { p in
                 return sqlite3_prepare_v2(handle, p, numericCast(sql.utf8CodeUnitCount), &stmt, nil)
             }
         }
