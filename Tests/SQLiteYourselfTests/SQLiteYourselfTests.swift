@@ -16,6 +16,18 @@ struct User: Equatable {
     }
 }
 
+struct UserWithId: Equatable {
+    var id: Int
+    let firstName: String
+    let lastName: String
+    let age: Float
+    let email: String
+
+    static func == (lhs: UserWithId, rhs: UserWithId) -> Bool {
+        return lhs.id == rhs.id
+    }
+}
+
 class SQLiteYourselfTests: XCTestCase {
 
     var databasePath: String = ""
@@ -134,6 +146,59 @@ class SQLiteYourselfTests: XCTestCase {
             XCTAssertEqual(tuple.2, expected.2)
             XCTAssertEqual(tuple.3, expected.3)
         }
+    }
+
+    func testAggregateOverscan() {
+
+        let db = try! DB.open(path: databasePath)
+        db.enableTrace(options: [.traceProfile, .traceClose])
+
+        try! db.exec("""
+                CREATE TABLE users (
+                    id INTEGER,
+                    first_name TEXT NOT NULL,
+                    last_name TEXT NOT NULL,
+                    age FLOAT NOT NULL,
+                    email TEXT UNIQUE,
+                    PRIMARY KEY(id)
+                );
+            """)
+
+        try! db.exec("""
+            CREATE TABLE scores (
+                id INTEGER,
+                user_id INTEGER NOT NULL,
+                score INTEGER NOT NULL,
+                PRIMARY KEY(id)
+            );
+            """)
+
+
+        var u1 = UserWithId(id: 0, firstName: "Thurstan", lastName: "Bussy", age: 34, email: "tbussy0@w3.org")
+        var u2 = UserWithId(id: 0, firstName: "Zoe", lastName: "Shufflebotham", age: 66, email: "zshufflebotham1@accuweather.com")
+
+        let tx = try! db.begin()
+
+        try! tx.exec("INSERT INTO users (first_name, last_name, age, email) VALUES (?, ?, ?, ?)", params: u1.firstName, u1.lastName, u1.age, u1.email)
+        u1.id = tx.lastInsertId
+
+        try! tx.exec("INSERT INTO users (first_name, last_name, age, email) VALUES (?, ?, ?, ?)", params: u2.firstName, u2.lastName, u2.age, u2.email)
+        u2.id = tx.lastInsertId
+
+        try! tx.exec("INSERT INTO scores (user_id, score) VALUES (?, ?)", params: u1.id, 11)
+        try! tx.exec("INSERT INTO scores (user_id, score) VALUES (?, ?)", params: u2.id, 7)
+        try! tx.exec("INSERT INTO scores (user_id, score) VALUES (?, ?)", params: u1.id, 11)
+        try! tx.exec("INSERT INTO scores (user_id, score) VALUES (?, ?)", params: u2.id, 9)
+
+        try! tx.commit()
+
+        let userScorePairs = try! db.query("SELECT users.*, scores.score FROM users INNER JOIN scores ON users.id = scores.user_id WHERE users.first_name = 'Zoe'")
+            .map({ ($0.scan(UserWithId.self), $0.scan(Int.self)) })
+
+        XCTAssertEqual(userScorePairs[0].0, u2)
+        XCTAssertEqual(userScorePairs[1].0, u2)
+        XCTAssertEqual(userScorePairs[0].1, 7)
+        XCTAssertEqual(userScorePairs[1].1, 9)
     }
 
     static var allTests = [
