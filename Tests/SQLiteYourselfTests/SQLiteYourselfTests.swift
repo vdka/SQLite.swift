@@ -153,6 +153,8 @@ class SQLiteYourselfTests: XCTestCase {
         let db = try! DB.open(path: databasePath)
         db.enableTrace(options: [.traceProfile, .traceClose])
 
+        db.setTimeout(500)
+
         try! db.exec("""
                 CREATE TABLE users (
                     id INTEGER,

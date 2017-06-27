@@ -592,6 +592,13 @@ public class Rows: IteratorProtocol, Sequence {
     }
 }
 
+extension DB {
+
+    public func setTimeout(_ timeout: Int) {
+        sqlite3_busy_timeout(handle, numericCast(timeout))
+    }
+}
+
 // https://sqlite.org/c3ref/c_trace.html
 extension DB {
 
