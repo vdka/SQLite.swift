@@ -203,6 +203,22 @@ class SQLiteYourselfTests: XCTestCase {
         XCTAssertEqual(userScorePairs[1].1, 9)
     }
 
+    func testDateStorage() {
+
+        let db = try! DB.open(path: databasePath)
+        db.enableTrace(options: [.traceProfile, .traceClose])
+
+        db.setTimeout(500)
+
+        try! db.exec("CREATE TABLE users (name TEXT NOT NULL, dob INTEGER NOT NULL)")
+
+        let now = Date()
+        try! db.exec("INSERT INTO users VALUES ('Harry', ?)", params: now)
+
+        let harryDob = try! db.queryFirst("SELECT dob FROM users")!.scan(Date.self)
+        XCTAssertEqual(now.timeIntervalSince1970, harryDob.timeIntervalSince1970)
+    }
+
     static var allTests = [
         ("testGeneralUsage", testGeneralUsage),
         ("testNullableFields", testNullableFields),

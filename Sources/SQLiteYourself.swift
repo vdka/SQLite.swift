@@ -4,16 +4,12 @@ import SQLite3
 
 public enum ColumnType: Int32 {
     case integer = 1 // SQLITE_INTEGER
-    case float = 2 // SQLITE_FLOAT
+    case real = 2 // SQLITE_FLOAT
     case text = 3 // SQLITE_TEXT
     case blob = 4 // SQLITE_BLOB
     case null = 5 // SQLITE_NULL
-    case date = 42 // NOTE(vdka): This isn't an actual ColumnType defined in SQLite. It's adhoc
 }
 
-
-/// Internal DateFormatter instance used to manage date formatting
-let fmt = DateFormatter()
 
 public protocol DBInterface {
     var handle: DB.Handle { get }
@@ -189,18 +185,15 @@ extension DBInterface {
                 case .text(let param)?:
                     flag = sqlite3_bind_text(stmt, sqlIndex, param, -1, DB.SQLITE_TRANSIENT)
 
-                case .data(let param)?:
+                case .blob(let param)?:
                     flag = sqlite3_bind_blob(stmt, sqlIndex, param.withUnsafeBytes({ UnsafeRawPointer($0) }), numericCast(param.count), DB.SQLITE_TRANSIENT)
-
-                case .date(let param)?:
-                    let dateString = fmt.string(from: param)
-                    flag = sqlite3_bind_text(stmt, sqlIndex, dateString, -1, DB.SQLITE_TRANSIENT)
 
                 case .real(let param)?:
                     flag = sqlite3_bind_double(stmt, sqlIndex, param)
 
                 case .integer(let param)?:
                     flag = sqlite3_bind_int64(stmt, sqlIndex, numericCast(param))
+
 
                 case nil:
                     flag = sqlite3_bind_null(stmt, sqlIndex)
@@ -278,17 +271,15 @@ extension DBInterface {
     /// ```swift
     ///    let employee = try! db.queryFirst("SELECT * FROM users WHERE email LIKE '%@%.gov'")?.scan(User.self)
     public func queryFirst(_ sql: StaticString, params: SQLDataType?...) throws -> Rows.Row? {
-        return try queue.sync {
-            var rows = try query(sql, params: params)
-            defer {
-                rows.close()
-            }
-            guard let row = rows.next() else {
-                return nil
-            }
-
-            return row
+        var rows = try query(sql, params: params)
+        defer {
+            rows.close()
         }
+        guard let row = rows.next() else {
+            return nil
+        }
+        
+        return row
     }
 }
 
@@ -369,7 +360,7 @@ public class Rows: IteratorProtocol, Sequence {
             let val = sqlite3_column_int64(stmt, index)
             return Column.integer(numericCast(val))
 
-        case .float:
+        case .real:
             let val = sqlite3_column_double(stmt, index)
             return Column.real(val)
 
@@ -377,36 +368,12 @@ public class Rows: IteratorProtocol, Sequence {
             let data = sqlite3_column_blob(stmt, index)
             let size = sqlite3_column_bytes(stmt, index)
             let val = Data(bytes: data!, count: numericCast(size))
-            return Column.data(val)
-
-        case .date:
-            // Is this a text date
-            if let ptr = UnsafeRawPointer(sqlite3_column_text(stmt, index)) {
-                let uptr = ptr.bindMemory(to: CChar.self, capacity: 0)
-                let txt = String(validatingUTF8: uptr)!
-                let set = CharacterSet(charactersIn: "-:")
-                if txt.rangeOfCharacter(from:set) != nil {
-                    // Convert to time
-                    var time: tm = tm(tm_sec: 0, tm_min: 0, tm_hour: 0, tm_mday: 0, tm_mon: 0, tm_year: 0, tm_wday: 0, tm_yday: 0, tm_isdst: 0, tm_gmtoff: 0, tm_zone:nil)
-                    strptime(txt, "%Y-%m-%d %H:%M:%S", &time)
-                    time.tm_isdst = -1
-                    let diff = TimeZone.current.secondsFromGMT()
-                    let t = mktime(&time) + diff
-                    let ti = TimeInterval(t)
-                    let val = Date(timeIntervalSince1970: ti)
-                    return Column.date(val)
-                }
-            }
-            // If not a text date, then it's a time interval
-            let timestamp = sqlite3_column_double(stmt, index)
-            let val = Date(timeIntervalSince1970: timestamp)
-            return Column.date(val)
+            return Column.blob(val)
 
         case .null:
             return nil
 
         case .text:
-
             // If nothing works, return a string representation
             guard let ptr = UnsafeRawPointer(sqlite3_column_text(stmt, index)) else {
                 return nil
@@ -421,42 +388,8 @@ public class Rows: IteratorProtocol, Sequence {
     // TODO(vdka): Expose the column named types directly also.
     static func getColumnType(stmt: OpaquePointer, index: Int32) -> ColumnType {
 
-        // Column types - http://www.sqlite.org/datatype3.html (section 2.2 table column 1)
-        let blobTypes = ["BINARY", "BLOB", "VARBINARY"]
-        let charTypes = ["CHAR", "CHARACTER", "CLOB", "NATIONAL VARYING CHARACTER", "NATIVE CHARACTER", "NCHAR", "NVARCHAR", "TEXT", "VARCHAR", "VARIANT", "VARYING CHARACTER"]
-        let intTypes  = ["BIGINT", "BIT", "BOOL", "BOOLEAN", "INT", "INT2", "INT8", "INTEGER", "MEDIUMINT", "SMALLINT", "TINYINT"]
-        let nullTypes = ["NULL"]
-        let realTypes = ["DECIMAL", "DOUBLE", "DOUBLE PRECISION", "FLOAT", "NUMERIC", "REAL"]
-        let dateTypes = ["DATE", "DATETIME", "TIME", "TIMESTAMP"]
-
-        // Determine type of column - http://www.sqlite.org/c3ref/c_blob.html
-        guard let cDeclType = sqlite3_column_decltype(stmt, index) else {
-            // Expressions and sub-queries do not have `decltype` set
-            return ColumnType(rawValue: sqlite3_column_type(stmt, index))!
-        }
-        let declType = String(validatingUTF8: cDeclType)!.uppercased()
-
-        if intTypes.contains(declType) {
-            return ColumnType.integer
-        }
-        if dateTypes.contains(declType) {
-            return ColumnType.date
-        }
-        if realTypes.contains(declType) {
-            return ColumnType.float
-        }
-        if charTypes.contains(declType) {
-            return ColumnType.text
-        }
-        if blobTypes.contains(declType) {
-            return ColumnType.blob
-        }
-        if nullTypes.contains(declType) {
-            return ColumnType.null
-        }
-
-        // default everything to text
-        return ColumnType.text
+        let datatype = sqlite3_column_type(stmt, index)
+        return ColumnType(rawValue: datatype) ?? .null
     }
 
     /// Row represents a single row of data. Values can be read out using the `scan` functions

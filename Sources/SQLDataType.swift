@@ -5,15 +5,13 @@ public enum Column {
     case text(String)
     case integer(Int)
     case real(Double)
-    case date(Date)
-    case data(Data)
+    case blob(Data)
 }
 
 public protocol SQLDataType {
-    static func get(from column: Column) -> Self
-
     static var size: Int { get }
 
+    static func get(from column: Column) -> Self
     var sqlColumnValue: Column { get }
 }
 
@@ -91,27 +89,27 @@ extension Bool: SQLDataType {
 
 extension Date: SQLDataType {
     public static func get(from column: Column) -> Date {
-        guard case .date(let v) = column else {
+        guard case .real(let v) = column else {
             fatalError()
         }
-        return v
+        return Date(timeIntervalSince1970: v)
     }
 
     public var sqlColumnValue: Column {
-        return Column.date(self)
+        return Column.real(self.timeIntervalSince1970)
     }
 }
 
 extension Data: SQLDataType {
     public static func get(from column: Column) -> Data {
-        guard case .data(let v) = column else {
+        guard case .blob(let v) = column else {
             fatalError()
         }
         return v
     }
 
     public var sqlColumnValue: Column {
-        return Column.data(self)
+        return Column.blob(self)
     }
 }
 
