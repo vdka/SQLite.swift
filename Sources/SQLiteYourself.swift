@@ -17,6 +17,7 @@ let fmt = DateFormatter()
 
 public protocol DBInterface {
     var handle: DB.Handle { get }
+    var queue: DispatchQueue { get }
     func exec(_ sql: StaticString, params: SQLDataType?...) throws
     func query(_ sql: StaticString, params: SQLDataType?...) throws -> Rows
     func queryFirst(_ sql: StaticString, params: SQLDataType?...) throws -> Rows.Row?
@@ -25,22 +26,19 @@ public protocol DBInterface {
 public class Tx: DBInterface {
 
     public let handle: DB.Handle
-    public var isDone: Bool = false
+    public let queue: DispatchQueue
 
-    init(handle: DB.Handle) {
+    init(handle: DB.Handle, queue: DispatchQueue) {
         self.handle = handle
+        self.queue = queue
     }
 
     public func commit() throws {
-        precondition(!isDone)
         try exec("COMMIT")
-        isDone = true
     }
 
     public func rollback() throws {
-        precondition(!isDone)
         try exec("ROLLBACK")
-        isDone = true
     }
 
     public enum Mode {
@@ -91,6 +89,7 @@ extension Tx {
 public class DB: DBInterface {
 
     public let handle: DB.Handle
+    public let queue = DispatchQueue(label: "me.vdka.SQLiteYourself", qos: .userInteractive, attributes: [])
 
     init(handle: DB.Handle) {
         self.handle = handle
@@ -110,10 +109,12 @@ public class DB: DBInterface {
     }
 
     public func close() {
-        if #available(OSX 10.10, iOS 8.2, *) {
-            sqlite3_close_v2(handle)
-        } else {
-            sqlite3_close(handle)
+        queue.sync {
+            if #available(OSX 10.10, iOS 8.2, *) {
+                sqlite3_close_v2(handle)
+            } else {
+                sqlite3_close(handle)
+            }
         }
     }
 
@@ -122,7 +123,7 @@ public class DB: DBInterface {
     /// - SeeAlso: Tx.Mode
     public func begin(_ mode: Tx.Mode = .deferred) throws -> Tx {
 
-        let tx = Tx(handle: handle)
+        let tx = Tx(handle: handle, queue: queue)
         switch mode {
         case .deferred:
             try exec("BEGIN") // NOTE: DEFERRED is the default behaviour
@@ -217,48 +218,51 @@ extension DBInterface {
     /// - SeeAlso: lastInsertId
     /// - SeeAlso: rowsAffected
     public func exec(_ sql: StaticString, params: SQLDataType?...) throws {
-
-        var stmt: DB.Stmt?
-        var res = sql.withUTF8Buffer { buffer in
-            return buffer.baseAddress!.withMemoryRebound(to: CChar.self, capacity: buffer.count) { p in
-                return sqlite3_prepare_v2(handle, p, numericCast(buffer.count), &stmt, nil)
+        try queue.sync {
+            var stmt: DB.Stmt?
+            var res = sql.withUTF8Buffer { buffer in
+                return buffer.baseAddress!.withMemoryRebound(to: CChar.self, capacity: buffer.count) { p in
+                    return sqlite3_prepare_v2(handle, p, numericCast(buffer.count), &stmt, nil)
+                }
             }
-        }
 
-        guard res == SQLITE_OK else {
-            throw DB.Error.new(handle)
-        }
-
-        try bind(stmt: stmt!, params: params.map({ $0?.sqlColumnValue }))
-
-        res = sqlite3_step(stmt)
-        guard res == SQLITE_OK || res == SQLITE_DONE else {
-            if res == SQLITE_BUSY {
-                print("DB was busy, this can be tried again!")
+            guard res == SQLITE_OK else {
+                throw DB.Error.new(handle)
             }
-            throw DB.Error.new(handle)
+
+            try bind(stmt: stmt!, params: params.map({ $0?.sqlColumnValue }))
+
+            res = sqlite3_step(stmt)
+            guard res == SQLITE_OK || res == SQLITE_DONE else {
+                if res == SQLITE_BUSY {
+                    print("DB was busy, this can be tried again!")
+                }
+                throw DB.Error.new(handle)
+            }
         }
     }
 
     public func query(_ sql: StaticString, params: [SQLDataType?]) throws -> Rows {
 
-        var stmt: DB.Stmt?
+        return try queue.sync {
+            var stmt: DB.Stmt?
 
-        // This grabs the buffer from the static string `sql` without a copy and needs to jump a couple hoops to get to the expected type.
-        let res = sql.withUTF8Buffer { buffer in
-            return buffer.baseAddress!.withMemoryRebound(to: CChar.self, capacity: buffer.count) { p in
-                return sqlite3_prepare_v2(handle, p, numericCast(sql.utf8CodeUnitCount), &stmt, nil)
+            // This grabs the buffer from the static string `sql` without a copy and needs to jump a couple hoops to get to the expected type.
+            let res = sql.withUTF8Buffer { buffer in
+                return buffer.baseAddress!.withMemoryRebound(to: CChar.self, capacity: buffer.count) { p in
+                    return sqlite3_prepare_v2(handle, p, numericCast(sql.utf8CodeUnitCount), &stmt, nil)
+                }
             }
+
+            guard res == SQLITE_OK else {
+                sqlite3_finalize(stmt)
+                throw DB.Error.new(handle)
+            }
+
+            try bind(stmt: stmt!, params: params.map({ $0?.sqlColumnValue }))
+
+            return Rows(stmt: stmt!)
         }
-
-        guard res == SQLITE_OK else {
-            sqlite3_finalize(stmt)
-            throw DB.Error.new(handle)
-        }
-
-        try bind(stmt: stmt!, params: params.map({ $0?.sqlColumnValue }))
-
-        return Rows(stmt: stmt!)
     }
 
     /// Executes a query that returns rows, typically a SELECT. The args are for any placeholder parameters in the query.
@@ -274,15 +278,17 @@ extension DBInterface {
     /// ```swift
     ///    let employee = try! db.queryFirst("SELECT * FROM users WHERE email LIKE '%@%.gov'")?.scan(User.self)
     public func queryFirst(_ sql: StaticString, params: SQLDataType?...) throws -> Rows.Row? {
-        var rows = try query(sql, params: params)
-        defer {
-            rows.close()
-        }
-        guard let row = rows.next() else {
-            return nil
-        }
+        return try queue.sync {
+            var rows = try query(sql, params: params)
+            defer {
+                rows.close()
+            }
+            guard let row = rows.next() else {
+                return nil
+            }
 
-        return row
+            return row
+        }
     }
 }
 
