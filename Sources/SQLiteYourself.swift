@@ -482,8 +482,27 @@ public class Rows: IteratorProtocol, Sequence {
 
                 if extensions(of: ptype).isOptional {
                     allowNull = true
+                    // The RawValue type for an Optional Type is always the type of the first case (`.some`)
                     let propertyMetadata = Metadata.Enum(type: ptype)!
                     ptype = propertyMetadata.caseTypes!.first!
+
+                    // And now for the tricky part
+
+                    let optionalSize = propertyMetadata.valueWitnessTable.size
+
+                    // An `Optional` is the size of the generic type `Wrapped` + 1 byte.
+                    //    - `Optional.none` value is all zero's with the last byte being `1`
+                    //    - `Optional.some` the last byte is `0`
+
+                    // TODO(vdka): Look into how this would work for storing pointers in the database. I beleive pointers don't have the extra byte when optional
+
+                    let flagByte = storage.baseAddress!.advanced(by: offset + optionalSize - 1)
+                    if columns[scanIndex] == nil {
+                        storage.baseAddress!.advanced(by: offset).initializeMemory(as: UInt8.self, at: 0, count: optionalSize - 1, to: 0)
+                        flagByte.initializeMemory(as: UInt8.self, to: 1)
+                    } else {
+                        flagByte.initializeMemory(as: UInt8.self, to: 0)
+                    }
                 }
 
                 guard let propertyType = ptype as? SQLDataType.Type else {
@@ -507,15 +526,6 @@ public class Rows: IteratorProtocol, Sequence {
                         fatalError("Found null value in call to \(#function) where output type was non Optional")
                     }
 
-                    // And now for the tricky part
-
-                    let optionalSize = Metadata(type: ptype).valueWitnessTable.size
-
-                    // An `Optional` is the size of the generic type `Wrapped` + 1 byte.
-                    // An `Optional.none` value is all zero's with the last byte being `1`
-
-                    storage.baseAddress!.advanced(by: offset).initializeMemory(as: Int8.self, at: 0, count: optionalSize - 1, to: 0)
-                    storage.baseAddress!.advanced(by: offset).advanced(by: optionalSize).assumingMemoryBound(to: Int8.self).initialize(to: 1)
                     scanIndex += 1
                     continue
                 }

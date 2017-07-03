@@ -219,8 +219,55 @@ class SQLiteYourselfTests: XCTestCase {
         XCTAssertEqual(now.timeIntervalSince1970, harryDob.timeIntervalSince1970)
     }
 
+    func testScanManyOptionals() {
+
+        let db = try! DB.open(path: databasePath)
+        db.setTimeout(500)
+
+        try! db.exec("CREATE TABLE test (a INTEGER, b INTEGER, c INTEGER)")
+
+        try! db.exec("INSERT INTO test VALUES (1, NULL, 3)")
+
+        let row = try! db.queryFirst("SELECT * FROM test")!
+        var (a, b, c) = row.scan((Int?, Int?, Int?).self)
+
+        withUnsafeBytes(of: &a) { buf in
+            XCTAssertEqual(buf.last!, 0)
+        }
+        withUnsafeBytes(of: &b) { buf in
+            XCTAssertEqual(buf.last!, 1)
+        }
+        withUnsafeBytes(of: &c) { buf in
+            XCTAssertEqual(buf.last!, 0)
+        }
+
+        XCTAssertEqual(a, 1)
+        XCTAssertEqual(b, nil)
+        XCTAssertEqual(c, 3)
+    }
+
     static var allTests = [
         ("testGeneralUsage", testGeneralUsage),
         ("testNullableFields", testNullableFields),
     ]
+}
+
+func dumpMemory<T>(of input: T, nBytes: Int = MemoryLayout<T>.size) {
+
+    var input = input
+
+    withUnsafeBytes(of: &input) { buffer in
+
+        for offset in buffer.indices {
+            if offset % 8 == 0 && offset != 0 { print("\n", terminator: "") }
+
+            let byte = buffer.load(fromByteOffset: offset, as: UInt8.self)
+            let hexByte = String(byte, radix: 16)
+
+            // Pad the output to be 2 characters wide
+            if hexByte.characters.count == 1 { print("0", terminator: "") }
+            print(hexByte, terminator: " ")
+        }
+        print("")
+    }
 }
