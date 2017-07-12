@@ -91,11 +91,26 @@ public class DB: DBInterface {
         self.handle = handle
     }
 
-    public static func open(path: String?) throws -> DB {
+    public struct OpenFlags: OptionSet {
+        public let rawValue: Int32
+        public init(rawValue: Int32) { self.rawValue = rawValue }
+
+        public static let readOnly = OpenFlags(rawValue: SQLITE_OPEN_READONLY)
+        public static let readWrite = OpenFlags(rawValue: SQLITE_OPEN_READWRITE)
+        public static let create = OpenFlags(rawValue: SQLITE_OPEN_CREATE)
+        public static let openUri = OpenFlags(rawValue: SQLITE_OPEN_URI)
+        public static let openMemory = OpenFlags(rawValue: SQLITE_OPEN_MEMORY)
+        public static let noMutex = OpenFlags(rawValue: SQLITE_OPEN_NOMUTEX)
+        public static let fullMutex = OpenFlags(rawValue: SQLITE_OPEN_FULLMUTEX)
+        public static let sharedCache = OpenFlags(rawValue: SQLITE_OPEN_SHAREDCACHE)
+        public static let privateCache = OpenFlags(rawValue: SQLITE_OPEN_PRIVATECACHE)
+    }
+
+    public static func open(path: String?, flags: OpenFlags = [.readWrite, .create]) throws -> DB {
 
         var db: DB.Handle?
 
-        let res = sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil)
+        let res = sqlite3_open_v2(path, &db, flags.rawValue, nil)
         guard res == SQLITE_OK else {
             sqlite3_close(db)
             throw Error.new(db!)
