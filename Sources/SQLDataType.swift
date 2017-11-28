@@ -8,6 +8,25 @@ public enum Column {
     case blob(Data)
 }
 
+extension Column: CustomStringConvertible {
+
+    public var description: String {
+        switch self {
+        case .text(let s):
+            return s
+
+        case .integer(let i):
+            return i.description
+
+        case .real(let d):
+            return d.description
+
+        case .blob(let d):
+            return "<bytes x \(d.count)>"
+        }
+    }
+}
+
 public protocol SQLDataType {
     static var size: Int { get }
 
@@ -138,3 +157,4 @@ extension UUID: SQLDataType {
         return Column.text(self.uuidString)
     }
 }
+

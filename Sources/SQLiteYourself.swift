@@ -15,6 +15,7 @@ public protocol DBInterface {
     var handle: DB.Handle { get }
     var queue: DispatchQueue { get }
     func exec(_ sql: StaticString, params: SQLDataType?...) throws
+    func execUnsafe(_ sql: String, params: SQLDataType?...) throws -> Rows
     func query(_ sql: StaticString, params: SQLDataType?...) throws -> Rows
     func queryFirst(_ sql: StaticString, params: SQLDataType?...) throws -> Rows.Row?
 }
@@ -250,6 +251,26 @@ extension DBInterface {
         }
     }
 
+    /// `execUnsafe` executes a query from a non static string, leaving a larger vector for SQL injection
+    /// This is useful however if you want to provide your developer users with a SQL interface in app.
+    public func execUnsafe(_ sql: String, params: SQLDataType?...) throws -> Rows {
+        return try queue.sync {
+            var stmt: DB.Stmt?
+            let res: Int32 = sql.utf8CString.withUnsafeBytes { buf in
+                let p = buf.baseAddress!.assumingMemoryBound(to: CChar.self)
+                return sqlite3_prepare_v2(handle, p, numericCast(buf.count), &stmt, nil)
+            }
+
+            guard res == SQLITE_OK else {
+                throw DB.Error.new(handle)
+            }
+
+            try bind(stmt: stmt!, params: params.map({ $0?.sqlColumnValue }))
+
+            return Rows(stmt: stmt!)
+        }
+    }
+
     public func query(_ sql: StaticString, params: [SQLDataType?]) throws -> Rows {
 
         return try queue.sync {
@@ -293,7 +314,7 @@ extension DBInterface {
         guard let row = rows.next() else {
             return nil
         }
-        
+
         return row
     }
 }
@@ -382,6 +403,9 @@ public class Rows: IteratorProtocol, Sequence {
         case .blob:
             let data = sqlite3_column_blob(stmt, index)
             let size = sqlite3_column_bytes(stmt, index)
+            guard size != 0 else {
+                return Column.blob(Data())
+            }
             let val = Data(bytes: data!, count: numericCast(size))
             return Column.blob(val)
 
@@ -533,7 +557,7 @@ public class Rows: IteratorProtocol, Sequence {
                         If you beleive this error should not have occured check GitHub for similar complaints and 👍 them.
                         If no issue exists that describes your use case please create an issue explaining why and how you would use this functionality.
 
-                    """)
+                        """)
                 }
 
                 guard let columnValue = columns[scanIndex] else {
@@ -693,3 +717,4 @@ extension DB {
         }
     }
 }
+
