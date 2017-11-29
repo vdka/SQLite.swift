@@ -267,8 +267,10 @@ extension DBInterface {
 
             try bind(stmt: stmt!, params: params.map({ $0?.sqlColumnValue }))
 
-            res = sqlite3_step(stmt)
-            guard res == SQLITE_OK || res == SQLITE_DONE else {
+            if !sql.lowercased().hasPrefix("select") {
+                res = sqlite3_step(stmt)
+            }
+            guard res == SQLITE_OK || res == SQLITE_DONE || res == SQLITE_ROW else {
                 if res == SQLITE_BUSY {
                     print("DB was busy, this can be tried again!")
                 }
