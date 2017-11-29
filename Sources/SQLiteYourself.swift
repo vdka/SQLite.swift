@@ -256,7 +256,7 @@ extension DBInterface {
     public func execUnsafe(_ sql: String, params: SQLDataType?...) throws -> Rows {
         return try queue.sync {
             var stmt: DB.Stmt?
-            let res: Int32 = sql.utf8CString.withUnsafeBytes { buf in
+            var res: Int32 = sql.utf8CString.withUnsafeBytes { buf in
                 let p = buf.baseAddress!.assumingMemoryBound(to: CChar.self)
                 return sqlite3_prepare_v2(handle, p, numericCast(buf.count), &stmt, nil)
             }
@@ -266,6 +266,14 @@ extension DBInterface {
             }
 
             try bind(stmt: stmt!, params: params.map({ $0?.sqlColumnValue }))
+
+            res = sqlite3_step(stmt)
+            guard res == SQLITE_OK || res == SQLITE_DONE else {
+                if res == SQLITE_BUSY {
+                    print("DB was busy, this can be tried again!")
+                }
+                throw DB.Error.new(handle)
+            }
 
             return Rows(stmt: stmt!)
         }
