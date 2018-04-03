@@ -242,6 +242,9 @@ extension DBInterface {
             try bind(stmt: stmt!, params: params.map({ $0?.sqlColumnValue }))
 
             res = sqlite3_step(stmt)
+            while res == SQLITE_ROW {
+                res = sqlite3_step(stmt)
+            }
             guard res == SQLITE_OK || res == SQLITE_DONE else {
                 if res == SQLITE_BUSY {
                     print("DB was busy, this can be tried again!")
