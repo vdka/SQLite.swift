@@ -4,6 +4,7 @@ Pod::Spec.new do |s|
   s.name         = "SQLiteYourself"
   s.version      = "0.1.0"
   s.summary      = "Lightweight wrapper around SQLite3's C API"
+  s.swift_version = '4.0'
 
   s.description  = <<-DESC
     SQLiteYourself is a simple yet powerful SQLite interface
