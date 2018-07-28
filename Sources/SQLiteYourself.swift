@@ -85,11 +85,13 @@ extension Tx {
 
 public class DB: DBInterface {
 
+    public let path: String?
     public let handle: DB.Handle
     public let queue = DispatchQueue(label: "me.vdka.SQLiteYourself", qos: .userInteractive, attributes: [])
 
-    init(handle: DB.Handle) {
-        self.handle = handle
+    public init(path: String?, flags: OpenFlags = [.readWrite, .create]) throws {
+        self.path = path
+        self.handle = try DB.open(path: path, flags: flags)
     }
 
     public struct OpenFlags: OptionSet {
@@ -107,17 +109,15 @@ public class DB: DBInterface {
         public static let privateCache = OpenFlags(rawValue: SQLITE_OPEN_PRIVATECACHE)
     }
 
-    public static func open(path: String?, flags: OpenFlags = [.readWrite, .create]) throws -> DB {
-
+    public static func open(path: String?, flags: OpenFlags = [.readWrite, .create]) throws -> DB.Handle {
         var db: DB.Handle?
 
         let res = sqlite3_open_v2(path, &db, flags.rawValue, nil)
-        guard res == SQLITE_OK else {
+        guard let handle = db, res == SQLITE_OK else {
             sqlite3_close(db)
             throw Error.new(db!)
         }
-
-        return DB(handle: db!)
+        return handle
     }
 
     public func close() {
@@ -328,7 +328,7 @@ extension DBInterface {
     public func queryFirst(_ sql: StaticString, params: SQLDataType?...) throws -> Rows.Row? {
         var rows = try query(sql, params: params)
         defer {
-            rows.close()
+            rows.finalize()
         }
         guard let row = rows.next() else {
             return nil
@@ -368,11 +368,11 @@ public class Rows: IteratorProtocol, Sequence {
     }
 
     deinit {
-        self.close()
+        self.finalize()
     }
 
     /// Close the rows preventing further enumeration. `next()` will return nil after a call to close
-    public func close() {
+    public func finalize() {
         // The error returned by finalize is indicative of the error returned by the last evaluation of stmt.
         // Hence, we can ignore it.
         _ = sqlite3_finalize(stmt)
