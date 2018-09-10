@@ -15,7 +15,8 @@ public protocol DBInterface {
     var handle: DB.Handle { get }
     var queue: DispatchQueue { get }
     func exec(_ sql: StaticString, params: SQLDataType?...) throws
-    func execUnsafe(_ sql: String, params: SQLDataType?...) throws -> Rows
+    func execUnsafe(_ sql: String, params: SQLDataType?...) throws
+    func queryUnsafe(_ sql: String, params: SQLDataType?...) throws -> Rows
     func query(_ sql: StaticString, params: SQLDataType?...) throws -> Rows
     func queryFirst(_ sql: StaticString, params: SQLDataType?...) throws -> Rows.Row?
 }
@@ -259,7 +260,9 @@ extension DBInterface {
 
     /// `execUnsafe` executes a query from a non static string, leaving a larger vector for SQL injection
     /// This is useful however if you want to provide your developer users with a SQL interface in app.
-    public func execUnsafe(_ sql: String, params: SQLDataType?...) throws -> Rows {
+    /// - SeeAlso: lastInsertId
+    /// - SeeAlso: rowsAffected
+    public func execUnsafe(_ sql: String, params: SQLDataType?...) throws {
         return try queue.sync {
             var stmt: DB.Stmt?
             var res: Int32 = sql.utf8CString.withUnsafeBytes { buf in
@@ -274,19 +277,18 @@ extension DBInterface {
                 throw DB.Error.new(handle)
             }
 
-            try bind(stmt: stmt!, params: params.map({ $0?.sqlColumnValue }))
-
-            if !sql.lowercased().hasPrefix("select") {
+            res = sqlite3_step(stmt)
+            while res == SQLITE_ROW {
                 res = sqlite3_step(stmt)
             }
-            guard res == SQLITE_OK || res == SQLITE_DONE || res == SQLITE_ROW else {
+            guard res == SQLITE_OK || res == SQLITE_DONE else {
                 if res == SQLITE_BUSY {
                     print("DB was busy, this can be tried again!")
                 }
                 throw DB.Error.new(handle)
             }
 
-            return Rows(stmt: stmt!)
+            try bind(stmt: stmt!, params: params.map({ $0?.sqlColumnValue }))
         }
     }
 
@@ -335,6 +337,39 @@ extension DBInterface {
         }
 
         return row
+    }
+
+    /// `queryUnsafe` executes a query from a non static string, leaving a larger vector for SQL injection
+    /// This is useful however if you want to provide your developer users with a SQL interface in app.
+    public func queryUnsafe(_ sql: String, params: SQLDataType?...) throws -> Rows {
+        return try queue.sync {
+            var stmt: DB.Stmt?
+            var res: Int32 = sql.utf8CString.withUnsafeBytes { buf in
+                let p = buf.baseAddress!.assumingMemoryBound(to: CChar.self)
+                return sqlite3_prepare_v2(handle, p, numericCast(buf.count), &stmt, nil)
+            }
+            defer {
+                sqlite3_finalize(stmt)
+            }
+
+            guard res == SQLITE_OK else {
+                throw DB.Error.new(handle)
+            }
+
+            try bind(stmt: stmt!, params: params.map({ $0?.sqlColumnValue }))
+
+            if !sql.lowercased().hasPrefix("select") {
+                res = sqlite3_step(stmt)
+            }
+            guard res == SQLITE_OK || res == SQLITE_DONE || res == SQLITE_ROW else {
+                if res == SQLITE_BUSY {
+                    print("DB was busy, this can be tried again!")
+                }
+                throw DB.Error.new(handle)
+            }
+
+            return Rows(stmt: stmt!)
+        }
     }
 }
 
