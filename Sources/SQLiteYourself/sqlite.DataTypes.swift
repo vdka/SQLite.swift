@@ -1,42 +1,16 @@
 
 import Foundation
 
-public enum Column {
-    case text(String)
-    case integer(Int)
-    case real(Double)
-    case blob(Data)
-}
-
-extension Column: CustomStringConvertible {
-
-    public var description: String {
-        switch self {
-        case .text(let s):
-            return s
-
-        case .integer(let i):
-            return i.description
-
-        case .real(let d):
-            return d.description
-
-        case .blob(let d):
-            return "<bytes x \(d.count)>"
-        }
-    }
-}
-
 public protocol SQLDataType {
     static var size: Int { get }
 
-    static func get(from column: Column) -> Self
     var sqlColumnValue: Column { get }
+    static func get(from column: Column) -> Self
 }
 
-extension SQLDataType {
+public extension SQLDataType {
 
-    public static var size: Int {
+    static var size: Int {
         return MemoryLayout<Self>.size
     }
 }
@@ -157,4 +131,5 @@ extension UUID: SQLDataType {
         return Column.text(self.uuidString)
     }
 }
+
 
