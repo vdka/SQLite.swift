@@ -80,9 +80,17 @@ class SQLiteYourselfTests: XCTestCase {
         db.queryRow("INSERT INTO users VALUES (?)", args: true)
         db.queryRow("INSERT INTO users VALUES (?)", args: false)
 
-        let isWiz = db.queryRow("SELECT wizard FROM users WHERE wizard").scan(Bool.self)
+        var isWiz = db.queryRow("SELECT wizard FROM users WHERE wizard").scan(Bool.self)
         XCTAssert(isWiz)
-        let noWiz = db.queryRow("SELECT wizard FROM users WHERE NOT wizard").scan(Bool.self)
+        var noWiz = db.queryRow("SELECT wizard FROM users WHERE NOT wizard").scan(Bool.self)
+        XCTAssertFalse(noWiz)
+
+        isWiz = false
+        noWiz = true
+
+        db.queryRow("SELECT wizard FROM users WHERE wizard").scan(&isWiz)
+        XCTAssert(isWiz)
+        db.queryRow("SELECT wizard FROM users WHERE NOT wizard").scan(&noWiz)
         XCTAssertFalse(noWiz)
     }
 

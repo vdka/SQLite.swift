@@ -258,15 +258,23 @@ public extension Database {
     }
 }
 
-func undef<T>() -> T {
+/// undef is used internally within SQLiteYourself to provide an undefined return value
+public func undef<T>() -> T {
     let pointer = UnsafeMutablePointer<T>.allocate(capacity: 1)
     defer { pointer.deallocate() }
     return pointer.pointee
 }
 
+// row.scan(&a).scan(&b)
+// row.scan() | row.scan(Type.self)
+// row.scan(default: undef()) | row.scan(Type.self, default: undef())
+// row.scan() | row.scan(Type?.self)
+// row.scanAny()
+
 extension Database.Row {
 
     public func scanAny() -> Any? {
+        if self.error != nil { return nil }
         switch scanColumn() {
         case .integer(let val)?:
             return val
@@ -285,16 +293,15 @@ extension Database.Row {
         }
     }
 
-    public func scan<Type: SQLDataType>() -> Type {
-        guard let value = scan(Type?.self) else {
-            self.error = Database.Error.init(
-                code: 0, description: "Scanned NULL from database where value was expected")
-            return undef()
-        }
-        return value
+    @discardableResult
+    public func scan<Type: SQLDataType>(_ value: inout Type) -> Database.Row {
+        if self.error != nil { return self }
+        value = scan(Type.self)
+        return self
     }
 
-    public func scan<Type: SQLDataType>(_ type: Type.Type) -> Type {
+    public func scan<Type: SQLDataType>(_ type: Type.Type, default: Type = undef()) -> Type {
+        if self.error != nil { return undef() }
         guard let value = scan(Type?.self) else {
             self.error = Database.Error.init(
                 code: 0, description: "Scanned NULL from database where value was expected")
