@@ -137,11 +137,15 @@ public class Database {
 
 public extension Database {
 
-    func query(_ query: String, args: SQLDataType?...) -> Rows {
+    func query(_ stmt: String, args: SQLDataType?...) -> Rows {
+        return query(stmt, args: args)
+    }
+
+    func query(_ stmt: String, args: [SQLDataType?]) -> Rows {
         return queue.sync {
             var stmtHandle: StatementHandle?
 
-            let result = query.utf8CString.withUnsafeBufferPointer { buffer in
+            let result = stmt.utf8CString.withUnsafeBufferPointer { buffer in
                 return sqlite3_prepare_v2(handle, buffer.baseAddress, numericCast(buffer.count), &stmtHandle, nil)
             }
 
@@ -187,11 +191,16 @@ public extension Database {
     }
 
     @discardableResult
-    func queryRow(_ query: String, args: SQLDataType?...) -> Row {
+    func queryRow(_ stmt: String, args: SQLDataType?...) -> Row {
+        return queryRow(stmt, args: args)
+    }
+
+    @discardableResult
+    func queryRow(_ stmt: String, args: [SQLDataType?]) -> Row {
         return queue.sync {
             var stmtHandle: StatementHandle?
 
-            var result = query.utf8CString.withUnsafeBufferPointer { buffer in
+            var result = stmt.utf8CString.withUnsafeBufferPointer { buffer in
                 return sqlite3_prepare_v2(handle, buffer.baseAddress, numericCast(buffer.count), &stmtHandle, nil)
             }
 
