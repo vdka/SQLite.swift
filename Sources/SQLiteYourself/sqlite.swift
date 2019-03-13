@@ -53,8 +53,7 @@ public class Database {
     public class Rows {
         var stmt: StatementHandle
         unowned var db: Database
-        var columnIndex: Int32 = 0
-        var columnCount: Int32 = 0
+        public var columnCount: Int32 = 0
         var types: [ColumnType] = []
         public var error: Database.Error?
 
@@ -98,8 +97,8 @@ public class Database {
         var stmt: StatementHandle
         unowned var db: Database
         weak var owningRows: Rows?
-        var columnIndex: Int32 = 0
-        var columnCount: Int32 = 0
+        public var columnIndex: Int32 = 0
+        public var columnCount: Int32 = 0
         var types: [ColumnType] = []
         public var error: Error? {
             didSet { owningRows?.error = error }
@@ -367,7 +366,6 @@ extension Database.Rows: IteratorProtocol, Sequence {
 
     public func next() -> Database.Row? {
         guard error == nil else { return nil }
-        columnIndex = 0
         return db.queue.sync {
 
             var result = sqlite3_step(stmt)
