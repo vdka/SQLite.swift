@@ -13,9 +13,9 @@ Pod::Spec.new do |s|
   s.homepage     = "https://github.com/vdka/SQLiteYourself"
   s.license      = { :type => "MIT", :file => "LICENSE.md" }
   s.author       = "Ethan Jackwitz"
-  s.ios.deployment_target = "8.0"
+  s.ios.deployment_target = "10.0"
   s.source       = { :git => "https://github.com/vdka/SQLiteYourself.git", :tag => "#{s.version}" }
-  s.source_files = "Sources", "Sources/*.swift", "Sources/*.h"
+  s.source_files = "Sources", "Sources/SQLiteYourself/*.swift", "Sources/*.h"
 
   s.library = ["sqlite3"]
 end
