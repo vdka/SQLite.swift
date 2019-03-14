@@ -292,6 +292,7 @@ extension Database.Row {
             // Set error?
             return nil
         }
+        defer { columnIndex += 1 }
         return db.queue.sync {
             switch types[Int(columnIndex)] {
             case .integer:
@@ -354,10 +355,8 @@ extension Database.Row: IteratorProtocol, Sequence {
 
     // Doubly wrapped any ... boy oh boy.
     public func next() -> Any?? {
-        guard error == nil, columnIndex < rows.columnCount else { return .none }
-        let value = db.queue.sync {
-            return self.scanAny()
-        }
+        guard error == nil, columnIndex < rows.columnCount else { return Optional<Any?>.none }
+        let value = scanAny()
         return .some(value)
     }
 }
