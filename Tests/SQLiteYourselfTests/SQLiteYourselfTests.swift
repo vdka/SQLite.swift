@@ -1,33 +1,6 @@
 import XCTest
 @testable import SQLiteYourself
 
-struct User: Equatable {
-
-    let firstName: String
-    let lastName: String
-    let age: Float
-    let email: String
-
-    static func == (lhs: User, rhs: User) -> Bool {
-        return lhs.firstName == rhs.firstName &&
-            lhs.lastName == rhs.lastName &&
-            lhs.age == rhs.age &&
-            lhs.email == rhs.email
-    }
-}
-
-struct UserWithId: Equatable {
-    var id: Int
-    let firstName: String
-    let lastName: String
-    let age: Float
-    let email: String
-
-    static func == (lhs: UserWithId, rhs: UserWithId) -> Bool {
-        return lhs.id == rhs.id
-    }
-}
-
 class SQLiteYourselfTests: XCTestCase {
 
     var databasePath: String = ""
@@ -42,10 +15,8 @@ class SQLiteYourselfTests: XCTestCase {
     }
 
     func testDateStorage() {
-
         let db = try! Database(filepath: databasePath)
         db.enableTrace(options: [.traceProfile, .traceClose])
-
         db.setTimeout(500)
 
         db.queryRow("CREATE TABLE users (dob INTEGER NOT NULL)")
@@ -53,30 +24,32 @@ class SQLiteYourselfTests: XCTestCase {
         let now = Date()
         db.queryRow("INSERT INTO users VALUES (?)", args: now)
 
-        let harryDob = db.queryRow("SELECT dob FROM users").scan(Date.self)
+        var harryDob = Date()
+        let row = db.queryRow("SELECT dob FROM users").scan(&harryDob)
+        XCTAssertNil(row.error)
         XCTAssertEqual(now.timeIntervalSince1970, harryDob.timeIntervalSince1970)
     }
 
     func testStringStorage() {
         let db = try! Database(filepath: databasePath)
         db.enableTrace(options: [.traceProfile, .traceClose])
-
         db.setTimeout(500)
 
         db.queryRow("CREATE TABLE users (name TEXT NOT NULL)")
         db.queryRow("INSERT INTO users VALUES (?)", args: "Harry")
 
-        let harryName = db.queryRow("SELECT name FROM users").scan(String.self)
+        let row = db.queryRow("SELECT name FROM users")
+        XCTAssertNil(row.error)
+        let harryName = row.scanAny() as? String
         XCTAssertEqual(harryName, "Harry")
     }
 
     func testBoolStorage() {
         let db = try! Database(filepath: databasePath)
         db.enableTrace(options: [.traceProfile, .traceClose])
-
         db.setTimeout(500)
 
-        db.queryRow("CREATE TABLE users (wizard BOOL NOT NULL)")
+        db.query("CREATE TABLE users (wizard BOOL NOT NULL)")
         db.queryRow("INSERT INTO users VALUES (?)", args: true)
         db.queryRow("INSERT INTO users VALUES (?)", args: false)
 
@@ -97,7 +70,6 @@ class SQLiteYourselfTests: XCTestCase {
     func testFloatStorage() {
         let db = try! Database(filepath: databasePath)
         db.enableTrace(options: [.traceProfile, .traceClose])
-
         db.setTimeout(500)
 
         db.queryRow("CREATE TABLE users (height FLOAT NOT NULL)")
@@ -105,6 +77,27 @@ class SQLiteYourselfTests: XCTestCase {
 
         let harryHeight = db.queryRow("SELECT height FROM users").scan(Float.self)
         XCTAssertEqual(harryHeight, 168.7)
+    }
+
+    func testIntStorage() {
+        let db = try! Database(filepath: databasePath)
+        db.enableTrace(options: [.traceProfile, .traceClose])
+        db.setTimeout(500)
+
+        db.queryRow("CREATE TABLE users (height INTEGER NULL)")
+        db.queryRow("INSERT INTO users VALUES (?)", args: 168)
+        db.queryRow("INSERT INTO users VALUES (?)", args: 188)
+
+        let rows = db.query("SELECT * FROM users WHERE height > ?", args: 180)
+        XCTAssertNil(rows.error)
+
+        let row = rows.next()
+        XCTAssertNotNil(row)
+
+        let height = row!.scan(Int.self, default: 0)
+        XCTAssertNil(row!.error)
+        XCTAssertEqual(height, 188)
+
     }
 
     static var allTests: [(String, () -> Void)] = [

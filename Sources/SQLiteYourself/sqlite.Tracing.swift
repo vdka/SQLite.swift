@@ -50,9 +50,7 @@ extension Database {
             let stmt = unsafeBitCast(p!, to: StatementHandle.self)
             let query = expandStmt(stmt)
             let timeMilliseconds = timeNanoseconds / 10000
-            print("\(timeMilliseconds)ms elapsed while running: ")
-            print(query)
-            print()
+            print("\(timeMilliseconds)ms " + query)
 
         case SQLITE_TRACE_ROW:
 

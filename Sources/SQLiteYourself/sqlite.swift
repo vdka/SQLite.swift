@@ -30,7 +30,7 @@ public class Database {
 
     public let filepath: String
     let handle: Handle
-    let queue = DispatchQueue(label: "me.vdka.Transact.SQLite3DB.Handle", qos: DispatchQoS.userInteractive, attributes: [])
+    let queue = DispatchQueue(label: "me.vdka.Transact.SQLite3DB.Handle", qos: .userInteractive, attributes: [])
 
     public init(filepath: String) throws {
         var dbHandle: Handle?
@@ -45,7 +45,7 @@ public class Database {
     }
 
     deinit {
-        queue.async { [handle] in
+        queue.sync { [handle] in
             sqlite3_close_v2(handle)
         }
     }
@@ -53,67 +53,77 @@ public class Database {
     public class Rows {
         var stmt: StatementHandle
         unowned var db: Database
+
         public var columnCount: Int32 = 0
-        var types: [ColumnType] = []
         public var error: Database.Error?
+        public lazy var columnNames: [String] = {
+            if error != nil { return [] }
+            return (0..<columnCount)
+                .map({ sqlite3_column_name(stmt, $0) })
+                .map({ String(cString: $0) })
+        }()
 
         init(stmt: StatementHandle, db: Database) {
+            assert(String(cString: __dispatch_queue_get_label(nil), encoding: .utf8) == db.queue.label)
+
             self.stmt = stmt
             self.db = db
 
-            var result = sqlite3_step(stmt)
-            repeat {
-                switch result {
-                case SQLITE_ROW:
-                    break
-
-                case SQLITE_BUSY:
-                    result = sqlite3_step(stmt)
-                    continue
-
-                case SQLITE_DONE:
-                    break
-
-                default:
-                    self.error = Database.Error.new(stmt)
-                    return
-                }
-            } while result == SQLITE_BUSY
-
             self.columnCount = sqlite3_column_count(stmt)
-            for index in 0..<columnCount {
-                let datatype = sqlite3_column_type(stmt, index)
-                let type = ColumnType(rawValue: datatype) ?? .null
-                types.append(type)
-            }
         }
 
         deinit {
-            sqlite3_finalize(stmt)
+            db.queue.sync {
+                if sqlite3_stmt_status(stmt, SQLITE_STMTSTATUS_RUN, 0) == 0 {
+                    if sqlite3_stmt_readonly(stmt) == 0 {
+                        // Check if the query hasn't been run
+                        // This statement will have side effects, for those, we step once. To apply them.
+                        // The statement is deallocating before being run, let's run it once first.
+
+                        var result = sqlite3_step(stmt)
+                        repeat {
+                            switch result {
+                            case SQLITE_ROW:
+                                break
+                            case SQLITE_BUSY:
+                                result = sqlite3_step(stmt)
+                                continue
+                            case SQLITE_DONE:
+                                break
+                            default:
+                                // Some error ...
+                                // TODO: What do we do here?
+                                return
+                            }
+                        } while result == SQLITE_BUSY
+                    } else {
+                        print("Rows deallocated before ever calling next on them")
+                    }
+                }
+                sqlite3_finalize(stmt)
+            }
         }
     }
 
     public class Row {
         var stmt: StatementHandle
         unowned var db: Database
-        weak var owningRows: Rows?
+
+        public var rows: Rows
         public var columnIndex: Int32 = 0
-        public var columnCount: Int32 = 0
-        var types: [ColumnType] = []
         public var error: Error? {
-            didSet { owningRows?.error = error }
+            didSet { rows.error = error }
         }
 
-        init(stmt: StatementHandle, db: Database, owningRows: Rows? = nil) {
+        var types: [ColumnType] = []
+
+        init(stmt: StatementHandle, db: Database, rows: Rows) {
             self.stmt = stmt
             self.db = db
-            self.owningRows = owningRows
+            self.rows = rows
+            self.error = rows.error
 
-            assert(String(cString: __dispatch_queue_get_label(nil), encoding: .utf8) == db.queue.label)
-
-            self.columnCount = sqlite3_column_count(stmt)
-            self.types = []
-            for index in 0..<columnCount {
+            for index in 0..<rows.columnCount {
                 let datatype = sqlite3_column_type(stmt, index)
                 let type = ColumnType(rawValue: datatype) ?? .null
                 types.append(type)
@@ -136,29 +146,31 @@ public class Database {
 
 public extension Database {
 
-    func query(_ stmt: String, args: SQLDataType?...) -> Rows {
-        return query(stmt, args: args)
+    @discardableResult
+    func query(_ sql: String, args: SQLDataType?...) -> Rows {
+        return query(sql, args: args)
     }
 
-    func query(_ stmt: String, args: [SQLDataType?]) -> Rows {
+    @discardableResult
+    func query(_ sql: String, args: [SQLDataType?]) -> Rows {
         return queue.sync {
             var stmtHandle: StatementHandle?
 
-            let result = stmt.utf8CString.withUnsafeBufferPointer { buffer in
-                return sqlite3_prepare_v2(handle, buffer.baseAddress, numericCast(buffer.count), &stmtHandle, nil)
+            let result = sql.utf8CString.withUnsafeBufferPointer { buffer in
+                return sqlite3_prepare_v2(handle, buffer.baseAddress, numericCast(sql.count), &stmtHandle, nil)
             }
 
             guard let stmt = stmtHandle, result == SQLITE_OK else {
                 let rows = Rows(stmt: undef(), db: self)
                 rows.error = Error.new(handle)
-                sqlite3_finalize(stmtHandle)
                 return rows
             }
 
-            let rows = Rows(stmt: stmt, db: self)
+            assert(sqlite3_bind_parameter_count(stmt) == args.count)
 
+            let rows = Rows(stmt: stmt, db: self)
             for (index, arg) in args.map({ $0?.sqlColumnValue }).enumerated() {
-                let sqlIndex = Int32(index + 1)
+                let sqlIndex = Int32(index + 1) // The leftmost value in SQLite has an index of 1
                 var flag: Int32 = 0
                 switch arg {
                 case .text(let param)?:
@@ -181,7 +193,6 @@ public extension Database {
 
                 if flag != SQLITE_OK {
                     rows.error = Error.new(handle)
-                    sqlite3_finalize(stmt)
                 }
             }
 
@@ -190,85 +201,38 @@ public extension Database {
     }
 
     @discardableResult
-    func queryRow(_ stmt: String, args: SQLDataType?...) -> Row {
-        return queryRow(stmt, args: args)
+    func queryRow(_ sql: String, args: SQLDataType?...) -> Row {
+        return queryRow(sql, args: args)
     }
 
     @discardableResult
-    func queryRow(_ stmt: String, args: [SQLDataType?]) -> Row {
-        return queue.sync {
-            var stmtHandle: StatementHandle?
-
-            var result = stmt.utf8CString.withUnsafeBufferPointer { buffer in
-                return sqlite3_prepare_v2(handle, buffer.baseAddress, numericCast(buffer.count), &stmtHandle, nil)
-            }
-
-            guard let stmt = stmtHandle, result == SQLITE_OK else {
-                let row = Row(stmt: undef(), db: self)
-                row.error = Error.new(handle)
-                sqlite3_finalize(stmtHandle)
-                return row
-            }
-
-            let row = Row(stmt: stmt, db: self)
-
-            for (index, arg) in args.map({ $0?.sqlColumnValue }).enumerated() {
-                let sqlIndex = Int32(index + 1)
-                var flag: Int32 = 0
-                switch arg {
-                case .text(let param)?:
-                    flag = sqlite3_bind_text(stmt, sqlIndex, param, Int32(param.utf8.count), SQLITE_TRANSIENT)
-
-                case .blob(let param)?:
-                    param.withUnsafeBytes {
-                        flag = sqlite3_bind_blob(stmt, sqlIndex, UnsafeRawPointer($0), Int32(param.count), SQLITE_TRANSIENT)
-                    }
-
-                case .real(let param)?:
-                    flag = sqlite3_bind_double(stmt, sqlIndex, param)
-
-                case .integer(let param)?:
-                    flag = sqlite3_bind_int64(stmt, sqlIndex, numericCast(param))
-
-                case nil:
-                    flag = sqlite3_bind_null(stmt, sqlIndex)
-                }
-
-                guard flag == SQLITE_OK else {
-                    let error = Error.new(handle)
-                    sqlite3_finalize(stmt)
-                    row.error = error
-                    return row
-                }
-            }
-
-            result = sqlite3_step(stmt)
-            repeat {
-                switch result {
-                case SQLITE_ROW:
-                    break
-
-                case SQLITE_BUSY:
-                    result = sqlite3_step(stmt)
-                    continue
-
-                case SQLITE_DONE:
-                    break
-
-                default:
-                    row.error = Error.new(stmt)
-                    return row
-                }
-            } while result == SQLITE_BUSY
-
-            return Row(stmt: stmt, db: self)
+    func queryRow(_ sql: String, args: [SQLDataType?]) -> Row {
+        let rows = query(sql, args: args)
+        guard let row = rows.next() else {
+            let row = Row(stmt: rows.stmt, db: self, rows: rows)
+            row.error = Error(code: SQLITE_DONE, description: "No rows")
+            return row
         }
+        return row
     }
+}
+
+public func undef() -> String {
+    return ""
+}
+
+public func undef<T>() -> Optional<T> {
+    return .none
 }
 
 /// undef is used internally within SQLiteYourself to provide an undefined return value
 public func undef<T>() -> T {
     let pointer = UnsafeMutablePointer<T>.allocate(capacity: 1)
+    pointer.withMemoryRebound(to: UInt8.self, capacity: MemoryLayout<T>.size, {
+        for offs in (0..<MemoryLayout<T>.size) {
+            $0.advanced(by: offs).pointee = 0
+        }
+    })
     defer { pointer.deallocate() }
     return pointer.pointee
 }
@@ -324,7 +288,7 @@ extension Database.Row {
     }
 
     private func scanColumn() -> Column? {
-        guard columnIndex < columnCount else {
+        guard columnIndex < rows.columnCount else {
             // Set error?
             return nil
         }
@@ -367,23 +331,33 @@ extension Database.Rows: IteratorProtocol, Sequence {
     public func next() -> Database.Row? {
         guard error == nil else { return nil }
         return db.queue.sync {
-
             var result = sqlite3_step(stmt)
             repeat {
                 switch result {
-                case SQLITE_ROW:
+                case SQLITE_ROW: // More rows available
                     break
-
+                case SQLITE_DONE: // No more rows available
+                    return nil
                 case SQLITE_BUSY:
                     result = sqlite3_step(stmt)
                     continue
-
                 default:
                     return nil
                 }
             } while result == SQLITE_BUSY
-
-            return Database.Row(stmt: stmt, db: db)
+            return Database.Row(stmt: stmt, db: db, rows: self)
         }
+    }
+}
+
+extension Database.Row: IteratorProtocol, Sequence {
+
+    // Doubly wrapped any ... boy oh boy.
+    public func next() -> Any?? {
+        guard error == nil, columnIndex < rows.columnCount else { return .none }
+        let value = db.queue.sync {
+            return self.scanAny()
+        }
+        return .some(value)
     }
 }
