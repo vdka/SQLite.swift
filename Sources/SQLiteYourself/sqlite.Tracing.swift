@@ -90,5 +90,3 @@ extension Database {
         sqlite3_trace_v2(handle, 0, nil, nil)
     }
 }
-
-

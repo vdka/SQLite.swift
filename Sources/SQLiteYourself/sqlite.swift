@@ -4,8 +4,8 @@ import SQLite3
 
 // MARK: Types
 
-private let SQLITE_STATIC = unsafeBitCast(0, to: sqlite3_destructor_type.self)
-private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+let SQLITE_STATIC = unsafeBitCast(0, to: sqlite3_destructor_type.self)
+let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
 typealias StatementHandle = OpaquePointer
 
@@ -24,17 +24,35 @@ enum ColumnType: Int32 {
     case null = 5 // SQLITE_NULL
 }
 
-public class Database {
+public struct SQLiteOpenFlags: OptionSet {
+    public let rawValue: Int32
+    public init(rawValue: Int32) { self.rawValue = rawValue }
 
-    public typealias Handle = OpaquePointer
+    public static let readOnly = SQLiteOpenFlags(rawValue: SQLITE_OPEN_READONLY)
+    public static let readWrite = SQLiteOpenFlags(rawValue: SQLITE_OPEN_READWRITE)
+    public static let create = SQLiteOpenFlags(rawValue: SQLITE_OPEN_CREATE)
+    public static let openUri = SQLiteOpenFlags(rawValue: SQLITE_OPEN_URI)
+    public static let openMemory = SQLiteOpenFlags(rawValue: SQLITE_OPEN_MEMORY)
+    public static let noMutex = SQLiteOpenFlags(rawValue: SQLITE_OPEN_NOMUTEX)
+    public static let fullMutex = SQLiteOpenFlags(rawValue: SQLITE_OPEN_FULLMUTEX)
+    public static let sharedCache = SQLiteOpenFlags(rawValue: SQLITE_OPEN_SHAREDCACHE)
+    public static let privateCache = SQLiteOpenFlags(rawValue: SQLITE_OPEN_PRIVATECACHE)
+}
+
+public class Database {
+    typealias Handle = OpaquePointer
 
     public let filepath: String
     let handle: Handle
     let queue = DispatchQueue(label: "me.vdka.Transact.SQLite3DB.Handle", qos: .userInteractive, attributes: [])
 
-    public init(filepath: String) throws {
+    var hasOpenRows = false
+
+    public static var defaultOpenFlags: SQLiteOpenFlags = [.readWrite, .create, .sharedCache]
+
+    public init(filepath: String, flags: SQLiteOpenFlags = Database.defaultOpenFlags) throws {
         var dbHandle: Handle?
-        let result = sqlite3_open_v2(filepath, &dbHandle, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil)
+        let result = sqlite3_open_v2(filepath, &dbHandle, flags.rawValue, nil)
         guard let handle = dbHandle, result == SQLITE_OK else {
             let error = Error.new(dbHandle)
             sqlite3_close(dbHandle)
@@ -45,14 +63,15 @@ public class Database {
     }
 
     deinit {
-        queue.sync { [handle] in
+        let result = queue.sync { [handle] in
             sqlite3_close_v2(handle)
         }
+        _ = result
     }
 
     public class Rows {
         var stmt: StatementHandle
-        unowned var db: Database
+        var db: Database
 
         public var columnCount: Int32 = 0
         public var error: Database.Error?
@@ -64,17 +83,16 @@ public class Database {
         }()
 
         init(stmt: StatementHandle, db: Database) {
-            assert(String(cString: __dispatch_queue_get_label(nil), encoding: .utf8) == db.queue.label)
-
             self.stmt = stmt
             self.db = db
 
             self.columnCount = sqlite3_column_count(stmt)
+            db.hasOpenRows = true
         }
 
         deinit {
             db.queue.sync {
-                if sqlite3_stmt_status(stmt, SQLITE_STMTSTATUS_RUN, 0) == 0 {
+                if error == nil && sqlite3_stmt_status(stmt, SQLITE_STMTSTATUS_RUN, 0) == 0 {
                     if sqlite3_stmt_readonly(stmt) == 0 {
                         // Check if the query hasn't been run
                         // This statement will have side effects, for those, we step once. To apply them.
@@ -97,17 +115,18 @@ public class Database {
                             }
                         } while result == SQLITE_BUSY
                     } else {
-                        print("Rows deallocated before ever calling next on them")
+                        print("WARNING: Rows deallocated before ever calling next on them")
                     }
                 }
                 sqlite3_finalize(stmt)
+                db.hasOpenRows = false
             }
         }
     }
 
     public class Row {
         var stmt: StatementHandle
-        unowned var db: Database
+        var db: Database
 
         public var rows: Rows
         public var columnIndex: Int32 = 0
@@ -128,6 +147,21 @@ public class Database {
                 let type = ColumnType(rawValue: datatype) ?? .null
                 types.append(type)
             }
+        }
+    }
+
+    class PreparedStatement {
+        var handle: StatementHandle
+        unowned var db: Database
+
+        var error: Error?
+
+        lazy var isReadOnly: Bool = sqlite3_stmt_readonly(handle) != 0
+
+        init(handle: StatementHandle, db: Database, error: Error? = nil) {
+            self.handle = handle
+            self.db = db
+            self.error = error
         }
     }
 
@@ -154,49 +188,8 @@ public extension Database {
     @discardableResult
     func query(_ sql: String, args: [SQLDataType?]) -> Rows {
         return queue.sync {
-            var stmtHandle: StatementHandle?
-
-            let result = sql.utf8CString.withUnsafeBufferPointer { buffer in
-                return sqlite3_prepare_v2(handle, buffer.baseAddress, numericCast(sql.count), &stmtHandle, nil)
-            }
-
-            guard let stmt = stmtHandle, result == SQLITE_OK else {
-                let rows = Rows(stmt: undef(), db: self)
-                rows.error = Error.new(handle)
-                return rows
-            }
-
-            assert(sqlite3_bind_parameter_count(stmt) == args.count)
-
-            let rows = Rows(stmt: stmt, db: self)
-            for (index, arg) in args.map({ $0?.sqlColumnValue }).enumerated() {
-                let sqlIndex = Int32(index + 1) // The leftmost value in SQLite has an index of 1
-                var flag: Int32 = 0
-                switch arg {
-                case .text(let param)?:
-                    flag = sqlite3_bind_text(stmt, sqlIndex, param, Int32(param.utf8.count), SQLITE_TRANSIENT)
-
-                case .blob(let param)?:
-                    param.withUnsafeBytes {
-                        flag = sqlite3_bind_blob(stmt, sqlIndex, UnsafeRawPointer($0), Int32(param.count), SQLITE_TRANSIENT)
-                    }
-
-                case .real(let param)?:
-                    flag = sqlite3_bind_double(stmt, sqlIndex, param)
-
-                case .integer(let param)?:
-                    flag = sqlite3_bind_int64(stmt, sqlIndex, numericCast(param))
-
-                case nil:
-                    flag = sqlite3_bind_null(stmt, sqlIndex)
-                }
-
-                if flag != SQLITE_OK {
-                    rows.error = Error.new(handle)
-                }
-            }
-
-            return rows
+            let stmt = prepare(sql, args: args)
+            return Rows(stmt: stmt.handle, db: self)
         }
     }
 
@@ -214,6 +207,56 @@ public extension Database {
             return row
         }
         return row
+    }
+
+    func exec(_ sql: String, args: SQLDataType?...) -> Row {
+        return exec(sql, args: args)
+    }
+
+    func exec(_ sql: String, args: [SQLDataType?]) -> Row {
+        let row = queryRow(sql, args: args)
+        if row.error?.code == SQLITE_DONE {
+            row.error = nil
+        }
+        return row
+    }
+}
+
+extension Database {
+
+    func prepare(_ sql: String, args: [SQLDataType?]) -> PreparedStatement {
+        var stmtHandle: StatementHandle?
+        let result = sql.utf8CString.withUnsafeBufferPointer { buffer in
+            return sqlite3_prepare_v2(handle, buffer.baseAddress, numericCast(sql.count), &stmtHandle, nil)
+        }
+        guard let stmt = stmtHandle, result == SQLITE_OK else {
+            let error = Error.new(handle)
+            return PreparedStatement(handle: undef(), db: self, error: error)
+        }
+        assert(sqlite3_bind_parameter_count(stmt) == args.count)
+        for (index, arg) in args.map({ $0?.sqlColumnValue }).enumerated() {
+            let sqlIndex = Int32(index + 1) // The leftmost value in SQLite has an index of 1
+            var flag: Int32 = 0
+            switch arg {
+            case .text(let param)?:
+                flag = sqlite3_bind_text(stmt, sqlIndex, param, Int32(param.utf8.count), SQLITE_TRANSIENT)
+            case .blob(let param)?:
+                flag = param.withUnsafeBytes {
+                    return sqlite3_bind_blob(stmt, sqlIndex, UnsafeRawPointer($0), Int32(param.count), SQLITE_TRANSIENT)
+                }
+            case .real(let param)?:
+                flag = sqlite3_bind_double(stmt, sqlIndex, param)
+            case .integer(let param)?:
+                flag = sqlite3_bind_int64(stmt, sqlIndex, numericCast(param))
+            case nil:
+                flag = sqlite3_bind_null(stmt, sqlIndex)
+            }
+            if flag != SQLITE_OK {
+                let error = Error.new(handle)
+                return PreparedStatement(handle: undef(), db: self, error: error)
+            }
+        }
+        return PreparedStatement(handle: stmt, db: self)
     }
 }
 
@@ -358,5 +401,16 @@ extension Database.Row: IteratorProtocol, Sequence {
         guard error == nil, columnIndex < rows.columnCount else { return Optional<Any?>.none }
         let value = scanAny()
         return .some(value)
+    }
+}
+
+extension Database: Hashable {
+
+    public static func == (lhs: Database, rhs: Database) -> Bool {
+        return lhs.handle == rhs.handle
+    }
+
+    public var hashValue: Int {
+        return queue.hashValue
     }
 }

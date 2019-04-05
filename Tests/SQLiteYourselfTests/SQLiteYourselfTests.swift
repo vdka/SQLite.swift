@@ -1,13 +1,18 @@
 import XCTest
+import SQLite3
 @testable import SQLiteYourself
 
 class SQLiteYourselfTests: XCTestCase {
 
     var databasePath: String = ""
 
+    override class func setUp() {
+        super.setUp()
+        print("SQLite Version " + SQLITE_VERSION)
+    }
+
     override func setUp() {
         super.setUp()
-
         databasePath = (Bundle(for: type(of: self)).bundlePath as NSString).appendingPathComponent("db.sqlite")
         if FileManager.default.fileExists(atPath: databasePath) {
             try! FileManager.default.removeItem(atPath: databasePath)
@@ -19,7 +24,8 @@ class SQLiteYourselfTests: XCTestCase {
         db.enableTrace(options: [.traceProfile, .traceClose])
         db.setTimeout(500)
 
-        db.queryRow("CREATE TABLE users (dob INTEGER NOT NULL)")
+        let createRow = db.exec("CREATE TABLE users (dob INTEGER NOT NULL)")
+        XCTAssertNil(createRow.error)
 
         let now = Date()
         db.queryRow("INSERT INTO users VALUES (?)", args: now)
@@ -45,26 +51,29 @@ class SQLiteYourselfTests: XCTestCase {
     }
 
     func testBoolStorage() {
-        let db = try! Database(filepath: databasePath)
+        let db = try! Pool(filepath: databasePath)
         db.enableTrace(options: [.traceProfile, .traceClose])
         db.setTimeout(500)
 
-        db.query("CREATE TABLE users (wizard BOOL NOT NULL)")
-        db.queryRow("INSERT INTO users VALUES (?)", args: true)
-        db.queryRow("INSERT INTO users VALUES (?)", args: false)
+        var error: Database.Error?
 
-        var isWiz = db.queryRow("SELECT wizard FROM users WHERE wizard").scan(Bool.self)
-        XCTAssert(isWiz)
-        var noWiz = db.queryRow("SELECT wizard FROM users WHERE NOT wizard").scan(Bool.self)
-        XCTAssertFalse(noWiz)
+        error = db.exec("CREATE TABLE users (wizard BOOL NOT NULL)").error
+        XCTAssertNil(error)
 
-        isWiz = false
-        noWiz = true
+        error = db.exec("INSERT INTO users VALUES (?)", args: true).error
+        XCTAssertNil(error)
 
-        db.queryRow("SELECT wizard FROM users WHERE wizard").scan(&isWiz)
-        XCTAssert(isWiz)
-        db.queryRow("SELECT wizard FROM users WHERE NOT wizard").scan(&noWiz)
-        XCTAssertFalse(noWiz)
+        error = db.exec("INSERT INTO users VALUES (?)", args: false).error
+        XCTAssertNil(error)
+
+        var wiz = false
+
+        error = db.queryRow("SELECT wizard FROM users WHERE wizard").scan(&wiz).error
+        XCTAssertNil(error)
+        XCTAssert(wiz)
+        error = db.queryRow("SELECT wizard FROM users WHERE NOT wizard").scan(&wiz).error
+        XCTAssertNil(error)
+        XCTAssertFalse(wiz)
     }
 
     func testFloatStorage() {
