@@ -1,6 +1,18 @@
 
 ```swift
-extension User {
+struct User: Equatable {
+    let firstName: String?
+    let lastName: String
+    let age: Float
+    let email: String
+
+    init(firstName: String?, lastName: String, age: Float, email: String) {
+        self.firstName = firstName
+        self.lastName = lastName
+        self.age = age
+        self.email = email
+    }
+
     init(row: Database.Row) {
         self.firstName = row.scan()
         self.lastName = row.scan()
@@ -15,7 +27,7 @@ let error = db.exec(
     """
     CREATE TABLE users (
         id INTEGER,
-        first_name TEXT NOT NULL,
+        first_name TEXT,
         last_name TEXT NOT NULL,
         age FLOAT NOT NULL,
         email TEXT NOT NULL UNIQUE,
@@ -27,7 +39,7 @@ XCTAssertNil(error)
 
 let u1 = User(firstName: "Thurstan", lastName: "Bussy", age: 34, email: "tbussy0@w3.org")
 let u2 = User(firstName: "Zoe", lastName: "Shufflebotham", age: 66, email: "zshufflebotham1@accuweather.com")
-let u3 = User(firstName: "Constancia", lastName: "McKinstry", age: 33, email: "cmckinstry2@state.gov")
+let u3 = User(firstName: nil, lastName: "McKinstry", age: 33, email: "cmckinstry2@state.gov")
 let u4 = User(firstName: "Valma", lastName: "Mulvin", age: 31, email: "vmulvin3@ustream.tv")
 
 let users: [User] = [u1, u2, u3, u4]
