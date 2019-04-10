@@ -115,19 +115,17 @@ public extension Pool {
         do {
             return try execute { db in
                 let stmt = db.prepare(sql, args: args)
-                if let error = stmt.error {
-                    let rows = Database.Rows(stmt: stmt.handle, db: db)
-                    rows.error = error
-                    return rows
-                }
                 if !stmt.isReadOnly {
                     // Trigger deinit so finalize is called
                     sqlite3_finalize(stmt.handle)
                     print("WARNING: Write transaction done in query. Use exec instead")
                     let row = exec(sql, args: args)
+                    row.error = stmt.error
                     return row.rows
                 }
-                return Database.Rows(stmt: stmt.handle, db: db)
+                let rows = Database.Rows(stmt: stmt.handle, db: db)
+                rows.error = error
+                return rows
             }
         } catch let error as Database.Error {
             let rows = Database.Rows(stmt: undef(), db: undef())
