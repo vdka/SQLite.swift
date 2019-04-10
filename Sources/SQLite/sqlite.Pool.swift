@@ -115,6 +115,11 @@ public extension Pool {
         do {
             return try execute { db in
                 let stmt = db.prepare(sql, args: args)
+                if let error = stmt.error {
+                    let rows = Database.Rows(stmt: stmt.handle, db: db)
+                    rows.error = error
+                    return rows
+                }
                 if !stmt.isReadOnly {
                     // Trigger deinit so finalize is called
                     sqlite3_finalize(stmt.handle)
