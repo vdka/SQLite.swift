@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "SQLiteYourself",
+    name: "SQLite",
     products: [
-        .library(name: "SQLiteYourself", targets: ["SQLiteYourself"]),
+        .library(name: "SQLite", targets: ["SQLite"]),
     ],
     targets: [
-        .target(name: "SQLiteYourself"),
-        .testTarget(name: "SQLiteYourselfTests", dependencies: ["SQLiteYourself"]),
+        .target(name: "SQLite"),
+        .testTarget(name: "SQLiteTests", dependencies: ["SQLite"]),
     ]
 )

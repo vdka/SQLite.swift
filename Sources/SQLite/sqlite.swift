@@ -268,7 +268,7 @@ public func undef<T>() -> Optional<T> {
     return .none
 }
 
-/// undef is used internally within SQLiteYourself to provide an undefined return value
+/// undef is used internally within SQLite to provide an undefined return value
 public func undef<T>() -> T {
     let pointer = UnsafeMutablePointer<T>.allocate(capacity: 1)
     pointer.withMemoryRebound(to: UInt8.self, capacity: MemoryLayout<T>.size, {
@@ -315,7 +315,7 @@ extension Database.Row {
         return self
     }
 
-    public func scan<Type: SQLDataType>(_ type: Type.Type, default: Type = undef()) -> Type {
+    public func scan<Type: SQLDataType>(_ type: Type.Type = Type.self, default: Type = undef()) -> Type {
         if self.error != nil { return undef() }
         guard let value = scan(Type?.self) else {
             self.error = Database.Error.init(
@@ -325,7 +325,7 @@ extension Database.Row {
         return value
     }
 
-    public func scan<Type: SQLDataType>(_ type: Optional<Type>.Type) -> Type? {
+    public func scan<Type: SQLDataType>(_ type: Optional<Type>.Type = Type?.self) -> Type? {
         if self.error != nil { return nil }
         return scanColumn().map(Type.get)
     }
@@ -410,7 +410,7 @@ extension Database: Hashable {
         return lhs.handle == rhs.handle
     }
 
-    public var hashValue: Int {
-        return queue.hashValue
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(queue)
     }
 }

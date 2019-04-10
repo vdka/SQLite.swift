@@ -8,7 +8,7 @@ public class Pool {
     var traceOptions: Database.TraceOptions = []
     var timeout: Int?
 
-    let queue = DispatchQueue(label: "me.vdka.SQLiteYourself.Pool", qos: .userInteractive)
+    let queue = DispatchQueue(label: "me.vdka.SQLite.Pool", qos: .userInteractive)
 
     let writer: Database
 
