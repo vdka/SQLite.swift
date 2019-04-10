@@ -93,7 +93,7 @@ public class Pool {
     }
 }
 
-extension Pool {
+public extension Pool {
 
     @discardableResult
     func exec(_ sql: String, args: SQLDataType?...) -> Database.Row {
