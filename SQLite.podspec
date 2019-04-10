@@ -3,7 +3,7 @@ Pod::Spec.new do |s|
   s.name         = "SQLite"
   s.version      = "0.1.0"
   s.summary      = "Lightweight wrapper around SQLite3's C API"
-  s.swift_version = '5.0'
+  s.swift_version = '4.2'
 
   s.description  = <<-DESC
     SQLite is a simple wrapper around SQLite3's C api
